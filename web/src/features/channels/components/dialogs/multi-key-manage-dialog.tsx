@@ -41,6 +41,7 @@ import {
   ADMIN_PERMISSION_RESOURCES,
   hasPermission,
 } from '@/lib/admin-permissions'
+import { formatQuotaWithCurrency } from '@/lib/currency'
 import { handleServerError } from '@/lib/handle-server-error'
 import { useAuthStore } from '@/stores/auth-store'
 
@@ -53,7 +54,11 @@ import {
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
 } from '../../api'
-import { MULTI_KEY_FILTER_OPTIONS, MULTI_KEY_MODES } from '../../constants'
+import {
+  MULTI_KEY_FILTER_OPTIONS,
+  MULTI_KEY_MODES,
+  SENSITIVE_MASK,
+} from '../../constants'
 import {
   channelsQueryKeys,
   formatTimestamp,
@@ -76,7 +81,7 @@ export function MultiKeyManageDialog({
   onOpenChange,
 }: MultiKeyManageDialogProps) {
   const { t } = useTranslation()
-  const { currentRow } = useChannels()
+  const { currentRow, sensitiveVisible } = useChannels()
   const queryClient = useQueryClient()
   const currentUser = useAuthStore((s) => s.auth.user)
   const canEditSensitive = hasPermission(
@@ -95,6 +100,7 @@ export function MultiKeyManageDialog({
   const [enabledCount, setEnabledCount] = useState(0)
   const [manualDisabledCount, setManualDisabledCount] = useState(0)
   const [autoDisabledCount, setAutoDisabledCount] = useState(0)
+  const [balanceFailureThreshold, setBalanceFailureThreshold] = useState(0)
 
   // UI state
   const [statusFilter, setStatusFilter] = useState<number | null>(null)
@@ -137,6 +143,7 @@ export function MultiKeyManageDialog({
         setEnabledCount(response.data.enabled_count || 0)
         setManualDisabledCount(response.data.manual_disabled_count || 0)
         setAutoDisabledCount(response.data.auto_disabled_count || 0)
+        setBalanceFailureThreshold(response.data.balance_failure_threshold || 0)
       } else {
         handleServerError(response, t('Failed to load key status'))
       }
@@ -402,7 +409,33 @@ export function MultiKeyManageDialog({
                     id: 'status',
                     header: t('Status'),
                     className: 'w-32',
-                    cell: (key) => renderStatusBadge(key.status),
+                    cell: (key) => (
+                      <div className='flex flex-col items-start gap-1'>
+                        {renderStatusBadge(key.status)}
+                        {key.status === 1 &&
+                          (key.balance_failures ?? 0) > 0 && (
+                            <span className='text-warning text-xs'>
+                              {t('Balance failures: {{count}}/{{threshold}}', {
+                                count: key.balance_failures,
+                                threshold: balanceFailureThreshold,
+                              })}
+                            </span>
+                          )}
+                      </div>
+                    ),
+                  },
+                  {
+                    id: 'used-quota',
+                    header: t('Used Quota'),
+                    className: 'w-32',
+                    cellClassName: 'font-mono text-sm',
+                    cell: (key) =>
+                      sensitiveVisible
+                        ? formatQuotaWithCurrency(key.used_quota ?? 0, {
+                            digitsLarge: 2,
+                            digitsSmall: 4,
+                          })
+                        : SENSITIVE_MASK,
                   },
                   {
                     id: 'reason',

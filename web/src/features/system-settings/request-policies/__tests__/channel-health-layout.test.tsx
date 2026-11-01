@@ -94,6 +94,9 @@ describe('channel health layout', () => {
       }),
       screen.getByRole('textbox', { name: 'Auto-disable status codes' }),
       screen.getByRole('textbox', { name: 'Failure keywords' }),
+      screen.getByRole('spinbutton', {
+        name: 'Multi-key balance failure threshold',
+      }),
     ]) {
       expect(formItemOf(control)?.parentElement).toBe(grid)
     }

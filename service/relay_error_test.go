@@ -15,6 +15,7 @@ import (
 	"github.com/QuantumNous/new-api/model"
 	kitdto "github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 
 	"github.com/gin-gonic/gin"
@@ -210,4 +211,127 @@ func TestRequestPolicyEventsReachLogAdminInfo(t *testing.T) {
 	other := model.NewLogOther()
 	AppendRelayLogAdminInfo(untouched, nil, other)
 	assert.NotContains(t, other.Snapshot()["admin_info"], "request_policy", "requests without decisions do not carry an empty record")
+}
+
+func TestIsBalanceExhaustedError(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status int
+		msg    string
+		want   bool
+	}{
+		{name: "anthropic credit balance", status: http.StatusBadRequest, msg: "Your credit balance is too low to access the Anthropic API.", want: true},
+		{name: "openai insufficient quota", status: http.StatusTooManyRequests, msg: "You exceeded your current quota, please check your plan and billing details. (insufficient_quota)", want: true},
+		{name: "payment required status", status: http.StatusPaymentRequired, msg: "Insufficient Balance", want: true},
+		{name: "chinese balance message", status: http.StatusForbidden, msg: "账户余额不足，请充值", want: true},
+		{name: "invalid key", status: http.StatusUnauthorized, msg: "Incorrect API key provided", want: false},
+		{name: "rate limited", status: http.StatusTooManyRequests, msg: "Rate limit reached for requests", want: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			err := types.NewErrorWithStatusCode(errors.New(test.msg), types.ErrorCodeBadResponseStatusCode, test.status)
+			assert.Equal(t, test.want, IsBalanceExhaustedError(err))
+		})
+	}
+}
+
+func TestKeyBalanceFailureThresholdCountsConsecutiveFailuresPerKey(t *testing.T) {
+	previous := operation_setting.MultiKeyBalanceFailureThreshold
+	operation_setting.MultiKeyBalanceFailureThreshold = 3
+	const channelId = 900001
+	t.Cleanup(func() {
+		operation_setting.MultiKeyBalanceFailureThreshold = previous
+		ResetKeyBalanceFailures(channelId, "key-a")
+		ResetKeyBalanceFailures(channelId, "key-b")
+	})
+
+	for want := 1; want <= 2; want++ {
+		failures, reached := ReachedKeyBalanceFailureThreshold(channelId, "key-a")
+		assert.Equal(t, want, failures)
+		assert.False(t, reached)
+	}
+	// A success in between breaks the streak.
+	ResetKeyBalanceFailures(channelId, "key-a")
+	assert.Equal(t, 0, KeyBalanceFailures(channelId, "key-a"))
+
+	// Another key of the same channel keeps its own count.
+	failures, reached := ReachedKeyBalanceFailureThreshold(channelId, "key-b")
+	assert.Equal(t, 1, failures)
+	assert.False(t, reached)
+
+	for want := 1; want <= 3; want++ {
+		failures, reached = ReachedKeyBalanceFailureThreshold(channelId, "key-a")
+		assert.Equal(t, want, failures)
+		assert.Equal(t, want == 3, reached)
+	}
+	// Reaching the threshold clears the count for a later re-enable.
+	assert.Equal(t, 0, KeyBalanceFailures(channelId, "key-a"))
+	assert.Equal(t, 1, KeyBalanceFailures(channelId, "key-b"))
+}
+
+func TestProcessChannelErrorDisablesMultiKeyKeyOnlyAfterBalanceThreshold(t *testing.T) {
+	previousDB, previousType := model.DB, common.MainDatabaseType()
+	previousCache, previousRedis := common.MemoryCacheEnabled, common.RedisEnabled
+	previousAutoDisable, previousErrorLog := common.AutomaticDisableChannelEnabled, constant.ErrorLogEnabled
+	previousThreshold := operation_setting.MultiKeyBalanceFailureThreshold
+	previousCodes := operation_setting.AutomaticDisableStatusCodesToString()
+	t.Cleanup(func() {
+		model.DB = previousDB
+		common.SetMainDatabaseType(previousType)
+		common.MemoryCacheEnabled, common.RedisEnabled = previousCache, previousRedis
+		common.AutomaticDisableChannelEnabled, constant.ErrorLogEnabled = previousAutoDisable, previousErrorLog
+		operation_setting.MultiKeyBalanceFailureThreshold = previousThreshold
+		require.NoError(t, operation_setting.AutomaticDisableStatusCodesFromString(previousCodes))
+	})
+	database, err := gorm.Open(sqlite.Open(":memory:"), &gorm.Config{})
+	require.NoError(t, err)
+	sqlDB, err := database.DB()
+	require.NoError(t, err)
+	sqlDB.SetMaxOpenConns(1)
+	t.Cleanup(func() { require.NoError(t, sqlDB.Close()) })
+	require.NoError(t, database.AutoMigrate(&model.Channel{}, &model.Ability{}, &model.User{}))
+	model.DB = database
+	common.SetMainDatabaseType(common.DatabaseTypeSQLite)
+	common.MemoryCacheEnabled, common.RedisEnabled = false, false
+	common.AutomaticDisableChannelEnabled, constant.ErrorLogEnabled = true, false
+	operation_setting.MultiKeyBalanceFailureThreshold = 2
+	require.NoError(t, operation_setting.AutomaticDisableStatusCodesFromString("401,402"))
+	require.NoError(t, database.Create(&model.User{Username: "strike-test-root", Role: common.RoleRootUser, Status: common.UserStatusEnabled}).Error)
+	channel := &model.Channel{
+		Name: "multi-key-strikes", Key: "key-a\nkey-b", Type: 1, Status: common.ChannelStatusEnabled, Group: "default", Models: "test-model",
+		ChannelInfo: model.ChannelInfo{IsMultiKey: true, MultiKeySize: 2},
+	}
+	require.NoError(t, channel.Insert())
+	t.Cleanup(func() {
+		ResetKeyBalanceFailures(channel.Id, "key-a")
+		ResetKeyBalanceFailures(channel.Id, "key-b")
+	})
+	keyStatus := func(index int) int {
+		loaded, err := model.GetChannelById(channel.Id, true)
+		require.NoError(t, err)
+		if status, ok := loaded.ChannelInfo.MultiKeyStatusList[index]; ok {
+			return status
+		}
+		return common.ChannelStatusEnabled
+	}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	channelError := func(key string) types.ChannelError {
+		return types.ChannelError{ChannelId: channel.Id, ChannelName: channel.Name, IsMultiKey: true, UsingKey: key, AutoBan: true}
+	}
+	balanceErr := types.NewErrorWithStatusCode(errors.New("Insufficient Balance"), types.ErrorCodeBadResponseStatusCode, http.StatusPaymentRequired)
+
+	// First balance failure only counts; no disable is scheduled.
+	ProcessChannelError(c, channelError("key-a"), balanceErr, nil)
+	assert.Equal(t, 1, KeyBalanceFailures(channel.Id, "key-a"))
+
+	// Second consecutive failure reaches the threshold and disables only key-a.
+	ProcessChannelError(c, channelError("key-a"), balanceErr, nil)
+	require.Eventually(t, func() bool { return keyStatus(0) == common.ChannelStatusAutoDisabled }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, common.ChannelStatusEnabled, keyStatus(1))
+	assert.Equal(t, 0, KeyBalanceFailures(channel.Id, "key-a"))
+
+	// A non-balance disable error still disables its key on the first failure.
+	invalidKeyErr := types.NewErrorWithStatusCode(errors.New("Incorrect API key provided"), types.ErrorCodeBadResponseStatusCode, http.StatusUnauthorized)
+	ProcessChannelError(c, channelError("key-b"), invalidKeyErr, nil)
+	require.Eventually(t, func() bool { return keyStatus(1) == common.ChannelStatusAutoDisabled }, 5*time.Second, 10*time.Millisecond)
+	assert.Equal(t, 0, KeyBalanceFailures(channel.Id, "key-b"))
 }

@@ -15,6 +15,10 @@ var AutomaticDisableKeywords = []string{
 	"Your account is not authorized",
 }
 
+// MultiKeyBalanceFailureThreshold is how many consecutive balance-exhausted
+// errors one key of a multi-key channel may return before it is auto-disabled.
+var MultiKeyBalanceFailureThreshold = 5
+
 func AutomaticDisableKeywordsToString() string {
 	return strings.Join(AutomaticDisableKeywords, "\n")
 }

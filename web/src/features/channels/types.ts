@@ -233,6 +233,8 @@ export interface KeyStatus {
   disabled_time?: number
   reason?: string
   key_preview?: string
+  used_quota?: number // quota consumed through this key
+  balance_failures?: number // consecutive balance-exhausted failures so far
 }
 
 export type MultiKeyConfirmAction = {
@@ -258,6 +260,7 @@ export interface MultiKeyStatusResponse {
     enabled_count: number
     manual_disabled_count: number
     auto_disabled_count: number
+    balance_failure_threshold?: number
   }
 }
 

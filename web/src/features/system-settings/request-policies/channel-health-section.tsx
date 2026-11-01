@@ -86,6 +86,10 @@ const createChannelHealthSchema = (
       AutomaticEnableChannelEnabled: z.boolean(),
       AutomaticDisableKeywords: z.string(),
       AutomaticDisableStatusCodes: z.string(),
+      MultiKeyBalanceFailureThreshold: z.coerce
+        .number()
+        .int(t('Enter a positive integer'))
+        .min(1, t('Enter a positive integer')),
       monitor_setting: z.object({
         auto_test_channel_enabled: z.boolean(),
         auto_test_channel_minutes: z.coerce
@@ -136,6 +140,7 @@ type NormalizedChannelHealthValues = {
   AutomaticEnableChannelEnabled: boolean
   AutomaticDisableKeywords: string
   AutomaticDisableStatusCodes: string
+  MultiKeyBalanceFailureThreshold: number
   'monitor_setting.auto_test_channel_enabled': boolean
   'monitor_setting.auto_test_channel_minutes': number
   'monitor_setting.channel_test_concurrency': number
@@ -159,6 +164,7 @@ const buildFormDefaults = (
     defaults.AutomaticDisableKeywords ?? ''
   ),
   AutomaticDisableStatusCodes: defaults.AutomaticDisableStatusCodes ?? '',
+  MultiKeyBalanceFailureThreshold: defaults.MultiKeyBalanceFailureThreshold,
   monitor_setting: {
     auto_test_channel_enabled:
       defaults['monitor_setting.auto_test_channel_enabled'],
@@ -184,6 +190,7 @@ const normalizeDefaults = (
   AutomaticDisableStatusCodes: parseHttpStatusCodeRules(
     defaults.AutomaticDisableStatusCodes ?? ''
   ).normalized,
+  MultiKeyBalanceFailureThreshold: defaults.MultiKeyBalanceFailureThreshold,
   'monitor_setting.auto_test_channel_enabled':
     defaults['monitor_setting.auto_test_channel_enabled'],
   'monitor_setting.auto_test_channel_minutes':
@@ -207,6 +214,7 @@ const normalizeFormValues = (
   AutomaticDisableStatusCodes: parseHttpStatusCodeRules(
     values.AutomaticDisableStatusCodes
   ).normalized,
+  MultiKeyBalanceFailureThreshold: values.MultiKeyBalanceFailureThreshold,
   'monitor_setting.auto_test_channel_enabled':
     values.monitor_setting.auto_test_channel_enabled,
   'monitor_setting.auto_test_channel_minutes':
@@ -588,6 +596,32 @@ export function ChannelHealthSection({
                     <FormDescription>
                       {t(
                         'If an upstream error contains any of these keywords (case insensitive), the channel will be disabled automatically.'
+                      )}
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name='MultiKeyBalanceFailureThreshold'
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>
+                      {t('Multi-key balance failure threshold')}
+                    </FormLabel>
+                    <FormControl>
+                      <Input
+                        type='number'
+                        min={1}
+                        step={1}
+                        {...safeNumberFieldProps(field)}
+                      />
+                    </FormControl>
+                    <FormDescription>
+                      {t(
+                        'A key of a multi-key channel is disabled only after this many consecutive balance errors (such as insufficient balance) that match the rules above. Other matching errors still disable the key on the first failure.'
                       )}
                     </FormDescription>
                     <FormMessage />

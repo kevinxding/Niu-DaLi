@@ -2,7 +2,9 @@ package service
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
+	"sync"
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
@@ -74,6 +76,83 @@ func ShouldDisableChannel(err *types.NewAPIError) bool {
 	lowerMessage := strings.ToLower(err.Error())
 	search, _ := AcSearch(lowerMessage, operation_setting.AutomaticDisableKeywords, true)
 	return search
+}
+
+// balanceExhaustedKeywords identify upstream errors meaning the key ran out of
+// balance or prepaid quota, as opposed to an invalid or banned key.
+var balanceExhaustedKeywords = []string{
+	"insufficient balance",
+	"insufficient_balance",
+	"insufficient account balance",
+	"insufficient_quota",
+	"insufficient quota",
+	"credit balance is too low",
+	"exceeded your current quota",
+	"balance is not enough",
+	"not enough balance",
+	"payment required",
+	"余额不足",
+	"额度不足",
+	"欠费",
+}
+
+// IsBalanceExhaustedError reports whether an upstream error means the key has
+// run out of balance.
+func IsBalanceExhaustedError(err *types.NewAPIError) bool {
+	if err == nil {
+		return false
+	}
+	if err.StatusCode == http.StatusPaymentRequired {
+		return true
+	}
+	lowerMessage := strings.ToLower(err.Error())
+	found, _ := AcSearch(lowerMessage, balanceExhaustedKeywords, true)
+	return found
+}
+
+type channelKeyRef struct {
+	channelId int
+	key       string
+}
+
+var (
+	keyBalanceFailureLock sync.Mutex
+	keyBalanceFailures    = make(map[channelKeyRef]int)
+)
+
+// ReachedKeyBalanceFailureThreshold counts one more consecutive
+// balance-exhausted failure for a key of a multi-key channel and reports
+// whether the key has now failed often enough to be disabled. Reaching the
+// threshold clears the count, so a key that is later re-enabled starts over.
+func ReachedKeyBalanceFailureThreshold(channelId int, key string) (failures int, reached bool) {
+	ref := channelKeyRef{channelId: channelId, key: key}
+	keyBalanceFailureLock.Lock()
+	defer keyBalanceFailureLock.Unlock()
+	failures = keyBalanceFailures[ref] + 1
+	if failures >= operation_setting.MultiKeyBalanceFailureThreshold {
+		delete(keyBalanceFailures, ref)
+		return failures, true
+	}
+	keyBalanceFailures[ref] = failures
+	return failures, false
+}
+
+// ResetKeyBalanceFailures clears the consecutive balance failures of a key
+// after it served a request successfully.
+func ResetKeyBalanceFailures(channelId int, key string) {
+	keyBalanceFailureLock.Lock()
+	defer keyBalanceFailureLock.Unlock()
+	if len(keyBalanceFailures) == 0 {
+		return
+	}
+	delete(keyBalanceFailures, channelKeyRef{channelId: channelId, key: key})
+}
+
+// KeyBalanceFailures returns the current consecutive balance failures of a key.
+func KeyBalanceFailures(channelId int, key string) int {
+	keyBalanceFailureLock.Lock()
+	defer keyBalanceFailureLock.Unlock()
+	return keyBalanceFailures[channelKeyRef{channelId: channelId, key: key}]
 }
 
 func ShouldEnableChannel(newAPIError *types.NewAPIError, status int) bool {

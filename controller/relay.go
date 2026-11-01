@@ -197,6 +197,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		if newAPIError == nil {
 			service.MarkRequestPolicySuccess(c, relayInfo.StreamStatus)
+			if channel.ChannelInfo.IsMultiKey {
+				service.ResetKeyBalanceFailures(channel.Id, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			}
 			relayInfo.LastError = nil
 			return
 		}
@@ -293,8 +296,8 @@ func getChannel(c *gin.Context, info *relaycommon.RelayInfo, retryParam *service
 	return channel, nil
 }
 
-func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
-	service.ProcessChannelError(c, channelError, err, relayInfo)
+func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) bool {
+	return service.ProcessChannelError(c, channelError, err, relayInfo)
 }
 
 func RelayMidjourney(c *gin.Context) {
@@ -626,6 +629,9 @@ func executeTaskSubmissionWith(
 	task.PrivateData.SubscriptionId = relayInfo.SubscriptionId
 	task.PrivateData.TokenId = relayInfo.TokenId
 	task.PrivateData.NodeName = common.NodeName
+	if relayInfo.ChannelIsMultiKey && relayInfo.ApiKey != "" {
+		task.PrivateData.ChannelKeyHash = model.ChannelKeyHash(relayInfo.ApiKey)
+	}
 	task.PrivateData.BillingContext = &model.TaskBillingContext{
 		ModelPrice:      relayInfo.PriceData.ModelPrice,
 		GroupRatio:      relayInfo.PriceData.GroupRatioInfo.GroupRatio,
@@ -703,6 +709,9 @@ func executeTaskSubmissionWith(
 	}
 	if task.Status != model.TaskStatusFailure {
 		service.MarkRequestPolicySuccess(c, nil)
+		if relayInfo.ChannelIsMultiKey {
+			service.ResetKeyBalanceFailures(relayInfo.ChannelId, relayInfo.ApiKey)
+		}
 	} else {
 		policy.AddEvent(service.PolicyEvent{Decision: service.PolicyDecision{Action: "stop", Reason: "task_failed", Source: "upstream"}})
 	}

@@ -212,6 +212,13 @@ describe('request policy settings', () => {
       'monitor_setting.channel_test_concurrency',
       4,
     ],
+    [
+      'health',
+      'Multi-key balance failure threshold',
+      '3',
+      'MultiKeyBalanceFailureThreshold',
+      3,
+    ],
   ])(
     'saving a changed %s field writes only that original option key',
     async (section, label, input, key, value) => {

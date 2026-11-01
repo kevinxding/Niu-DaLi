@@ -296,6 +296,10 @@ export const MULTI_KEY_STATUS_CONFIG = {
 // Multi-Key Modes
 // ============================================================================
 
+// Placeholder shown instead of channel identity and usage while sensitive
+// information is hidden on the channels page.
+export const SENSITIVE_MASK = '••••'
+
 export const MULTI_KEY_MODES = [
   { value: 'random', label: 'Random' },
   { value: 'polling', label: 'Polling' },

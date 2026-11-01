@@ -48,6 +48,7 @@ func TestMain(m *testing.M) {
 		&TwoFABackupCode{},
 		&Log{},
 		&Channel{},
+		&ChannelKeyUsage{},
 		&QuotaData{},
 		&Ability{},
 		&TopUp{},

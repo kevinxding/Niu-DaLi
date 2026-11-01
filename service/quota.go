@@ -84,6 +84,15 @@ func calculateAudioQuota(info QuotaInfo) (int, *common.QuotaClamp) {
 	return common.QuotaFromDecimalChecked(quota)
 }
 
+// addChannelUsedQuota records settled quota on the channel and, for a
+// multi-key channel, on the key that served the request.
+func addChannelUsedQuota(relayInfo *relaycommon.RelayInfo, quota int) {
+	model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+	if relayInfo.ChannelIsMultiKey && relayInfo.ApiKey != "" {
+		model.UpdateChannelKeyUsedQuota(relayInfo.ChannelId, model.ChannelKeyHash(relayInfo.ApiKey), quota)
+	}
+}
+
 func PreWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, usage *dto.RealtimeUsage) error {
 	if relayInfo.UsePrice {
 		return nil
@@ -223,7 +232,7 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, modelName, relayInfo.FinalPreConsumedQuota))
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		addChannelUsedQuota(relayInfo, quota)
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
@@ -356,7 +365,7 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 			"tokenId %d, model %s， pre-consumed quota %d", relayInfo.UserId, relayInfo.ChannelId, relayInfo.TokenId, billingModelName, relayInfo.FinalPreConsumedQuota))
 	} else {
 		model.UpdateUserUsedQuotaAndRequestCount(relayInfo.UserId, quota)
-		model.UpdateChannelUsedQuota(relayInfo.ChannelId, quota)
+		addChannelUsedQuota(relayInfo, quota)
 	}
 
 	if err := SettleBilling(ctx, relayInfo, quota); err != nil {
