@@ -290,8 +290,21 @@ func Max(a int, b int) int {
 	}
 }
 
+// requestIdMarker prefixes the correlation id appended to client-visible error
+// messages. Relay chains put several gateways between the client and the
+// upstream, and each of them appends its own id, so the marker doubles as the
+// signal that a message has already been decorated.
+const requestIdMarker = " (request id: "
+
+// MessageWithRequestId appends the local request id to a client-visible error
+// message. A message that already carries a correlation id is returned
+// unchanged: without this check every hop in the chain appends another id and
+// the client sees one per hop instead of the originating id.
 func MessageWithRequestId(message string, id string) string {
-	return fmt.Sprintf("%s (request id: %s)", message, id)
+	if id == "" || strings.Contains(message, requestIdMarker) {
+		return message
+	}
+	return message + requestIdMarker + id + ")"
 }
 
 func RandomSleep() {

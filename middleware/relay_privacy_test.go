@@ -283,11 +283,36 @@ func TestRelayPrivacyKeepsImageAccountingAndBinaryMedia(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	engine.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", nil))
 	assert.Equal(t, []byte("audio\x00\xffprivate-worker"), recorder.Body.Bytes())
-	for _, name := range []string{"Content-Type", "Retry-After", "X-Reasoning-Included", "X-Codex-Turn-State"} {
+	for _, name := range []string{"Content-Type", "Retry-After", "X-Reasoning-Included", "X-Codex-Turn-State", "Anthropic-Ratelimit-Requests-Limit", "Anthropic-Ratelimit-Tokens-Remaining"} {
 		assert.True(t, service.ShouldCopyUpstreamHeader(nil, name, []string{"value"}))
 	}
-	assert.False(t, service.ShouldCopyUpstreamHeader(nil, "X-New-Api-Version", []string{"value"}))
+	for _, name := range []string{"X-New-Api-Version", "Authorization", "Set-Cookie", "X-Upstream-Request-Id"} {
+		assert.False(t, service.ShouldCopyUpstreamHeader(nil, name, []string{"value"}))
+	}
 	assert.False(t, service.ShouldCopyUpstreamHeader(nil, "Content-Type", nil))
+}
+
+// TestRelayPrivacyPublishesUpstreamRequestIdUnderItsOwnName pins the second half
+// of the header contract: the upstream correlation id is published next to the
+// local one rather than replacing it, so a client can quote whichever id the
+// operator asks for. A header of that name coming from the upstream is ignored.
+func TestRelayPrivacyPublishesUpstreamRequestIdUnderItsOwnName(t *testing.T) {
+	engine := privacyRouter(func(c *gin.Context) {
+		c.Set(common.UpstreamRequestIdKey, "upstream-request")
+		c.JSON(200, gin.H{"ok": true})
+	})
+	recorder := httptest.NewRecorder()
+	engine.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", nil))
+	assert.Equal(t, "upstream-request", recorder.Header().Get(common.UpstreamRequestIdKey))
+	assert.Equal(t, "local-request", recorder.Header().Get(common.RequestIdKey))
+
+	spoofed := privacyRouter(func(c *gin.Context) {
+		c.Header(common.UpstreamRequestIdKey, "spoofed-upstream")
+		c.JSON(200, gin.H{"ok": true})
+	})
+	recorder = httptest.NewRecorder()
+	spoofed.ServeHTTP(recorder, httptest.NewRequest("POST", "/test", nil))
+	assert.Empty(t, recorder.Header().Get(common.UpstreamRequestIdKey))
 }
 
 func TestRelayPrivacyHidesErrorDiagnostics(t *testing.T) {

@@ -126,7 +126,7 @@ func TestConvertClaudeRequestKeepsSamplingWhenChannelOptsOut(t *testing.T) {
 	info := &relaycommon.RelayInfo{
 		OriginModelName: req.Model,
 		ChannelMeta: &relaycommon.ChannelMeta{
-			UpstreamModelName:     req.Model,
+			UpstreamModelName:    req.Model,
 			ChannelOtherSettings: dto.ChannelOtherSettings{AllowClaudeNativeSampling: true},
 		},
 	}
@@ -319,4 +319,64 @@ func TestConvertGeminiRequestThinkingConfigUsesReasoningIntent(t *testing.T) {
 func TestConvertGeminiRequestNilRequest(t *testing.T) {
 	_, err := (&Adaptor{}).ConvertGeminiRequest(nil, geminiToClaudeInfo(), nil)
 	require.Error(t, err)
+}
+
+// claudeBodyWithUndeclaredField mixes declared envelope fields with a top-level
+// name the ClaudeRequest struct does not track. The provider adds parameters
+// faster than any fixed struct can follow, and rebuilding the body from the
+// declared list alone silently drops them.
+const claudeBodyWithUndeclaredField = `{"model":"claude-opus-4-8","max_tokens":64,` +
+	`"reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`
+
+func claudeExtraFieldInfo(model string, allowExtra bool) *relaycommon.RelayInfo {
+	return &relaycommon.RelayInfo{
+		OriginModelName: model,
+		ChannelMeta: &relaycommon.ChannelMeta{
+			UpstreamModelName:    model,
+			ChannelOtherSettings: dto.ChannelOtherSettings{AllowClaudeExtraFields: allowExtra},
+		},
+	}
+}
+
+// TestConvertClaudeRequestDropsUndeclaredTopLevelFieldsByDefault pins the safe
+// default: an unvalidated top-level parameter is never handed to the provider.
+func TestConvertClaudeRequestDropsUndeclaredTopLevelFieldsByDefault(t *testing.T) {
+	var req dto.ClaudeRequest
+	require.NoError(t, common.UnmarshalJsonStr(claudeBodyWithUndeclaredField, &req))
+	require.Contains(t, req.Extra, "reasoning_effort")
+
+	out, err := (&Adaptor{}).ConvertClaudeRequest(nil, claudeExtraFieldInfo(req.Model, false), &req)
+	require.NoError(t, err)
+	converted, ok := out.(*dto.ClaudeRequest)
+	require.True(t, ok)
+	assert.Nil(t, converted.Extra)
+
+	encoded, err := common.Marshal(converted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), "reasoning_effort")
+	assert.JSONEq(t, `{"model":"claude-opus-4-8","max_tokens":64,`+
+		`"messages":[{"role":"user","content":"hi"}]}`, string(encoded))
+}
+
+// TestConvertClaudeRequestForwardsUndeclaredTopLevelFieldsWhenChannelOptsIn
+// covers allow_claude_extra_fields: a channel fronting a provider that accepts
+// the newer parameter keeps it, still flat and still verbatim.
+func TestConvertClaudeRequestForwardsUndeclaredTopLevelFieldsWhenChannelOptsIn(t *testing.T) {
+	var req dto.ClaudeRequest
+	require.NoError(t, common.UnmarshalJsonStr(claudeBodyWithUndeclaredField, &req))
+
+	out, err := (&Adaptor{}).ConvertClaudeRequest(nil, claudeExtraFieldInfo(req.Model, true), &req)
+	require.NoError(t, err)
+	converted, ok := out.(*dto.ClaudeRequest)
+	require.True(t, ok)
+	require.Len(t, converted.Extra, 1)
+
+	encoded, err := common.Marshal(converted)
+	require.NoError(t, err)
+	assert.NotContains(t, string(encoded), `"Extra"`)
+	var flat map[string]any
+	require.NoError(t, common.Unmarshal(encoded, &flat))
+	assert.Equal(t, "high", flat["reasoning_effort"])
+	assert.Equal(t, "claude-opus-4-8", flat["model"])
+	assert.Equal(t, float64(64), flat["max_tokens"])
 }

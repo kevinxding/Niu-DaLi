@@ -33,6 +33,11 @@ func (a *Adaptor) ConvertGeminiRequest(c *gin.Context, info *relaycommon.RelayIn
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, request *dto.ClaudeRequest) (any, error) {
+	// Undeclared top-level fields reach the upstream only on channels that opt
+	// in, so an unvalidated parameter is never forwarded by default.
+	if !info.ChannelOtherSettings.AllowClaudeExtraFields {
+		request.DropUndeclaredFields()
+	}
 	if request.MaxTokens != nil && *request.MaxTokens == 0 {
 		request.MaxTokens = nil
 	}

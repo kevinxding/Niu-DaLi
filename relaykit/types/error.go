@@ -37,6 +37,12 @@ const (
 
 type ErrorCode string
 
+// unknownErrorCode stands in for a code an upstream never supplied. It is a
+// placeholder for the wire, not a classification: error-type derivation reads
+// the type a client branches on from the HTTP status instead, so this value must
+// stay out of that decision.
+const unknownErrorCode = "unknown_error"
+
 const (
 	ErrorCodeInvalidRequest         ErrorCode = "invalid_request"
 	ErrorCodeSensitiveWordsDetected ErrorCode = "sensitive_words_detected"
@@ -177,6 +183,61 @@ func (e *NewAPIError) SetMessage(message string) {
 	e.Err = errors.New(message)
 }
 
+// protocolErrorType maps an HTTP status code to the error type shared by the
+// Anthropic and OpenAI error envelopes. It is the fallback when an upstream
+// error carried no usable type of its own, so a client never receives an empty
+// type or the literal "<nil>" produced by formatting an absent code.
+func protocolErrorType(statusCode int) string {
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return "invalid_request_error"
+	case http.StatusUnauthorized:
+		return "authentication_error"
+	case http.StatusForbidden:
+		return "permission_error"
+	case http.StatusNotFound:
+		return "not_found_error"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case http.StatusTooManyRequests:
+		return "rate_limit_error"
+	case http.StatusServiceUnavailable, statusCodeOverloaded:
+		return "overloaded_error"
+	default:
+		return "api_error"
+	}
+}
+
+// statusCodeOverloaded is Anthropic's "Overloaded" status. Upstreams in front of
+// Bedrock return it, so it needs its own type rather than the generic api_error.
+const statusCodeOverloaded = 529
+
+// claudeErrorType reports the Anthropic error type for an upstream error that
+// arrived in OpenAI shape. Anthropic clients branch on this value, so it must
+// always be populated and must always name a type the client can act on: a code
+// that is a string is kept, and everything else is mapped from the HTTP status
+// the client actually received.
+//
+// Both spellings of a string code are accepted. An error rebuilt in this process
+// (NewOpenAIError, InitOpenAIError) carries an ErrorCode, while one parsed from
+// an upstream body carries a plain string; a numeric code is a status, not a
+// type, so it is deliberately not used here. The status is the signal that is
+// present even when an upstream, such as one sitting in front of Bedrock, sends
+// an error body with no classification of its own.
+func claudeErrorType(openAIError OpenAIError, statusCode int) string {
+	switch code := openAIError.Code.(type) {
+	case string:
+		if code != "" {
+			return code
+		}
+	case ErrorCode:
+		if code != "" {
+			return string(code)
+		}
+	}
+	return protocolErrorType(statusCode)
+}
+
 func (e *NewAPIError) ToOpenAIError() OpenAIError {
 	var result OpenAIError
 	switch e.errorType {
@@ -186,9 +247,13 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 		}
 	case ErrorTypeClaudeError:
 		if claudeError, ok := e.RelayError.(ClaudeError); ok {
+			errorType := claudeError.Type
+			if errorType == "" {
+				errorType = protocolErrorType(e.StatusCode)
+			}
 			result = OpenAIError{
 				Message: e.Error(),
-				Type:    claudeError.Type,
+				Type:    errorType,
 				Param:   "",
 				Code:    e.errorCode,
 			}
@@ -207,6 +272,16 @@ func (e *NewAPIError) ToOpenAIError() OpenAIError {
 	if result.Message == "" {
 		result.Message = string(e.errorType)
 	}
+	if result.Type == "" {
+		result.Type = protocolErrorType(e.StatusCode)
+	}
+	if result.Code == nil {
+		// Upstreams in front of Bedrock routinely omit `code`, and a null code is
+		// as unusable to a client as a missing one. This runs at the boundary
+		// rather than when the error is built so the placeholder cannot be
+		// mistaken for an upstream classification by the type derivation above.
+		result.Code = unknownErrorCode
+	}
 	return result
 }
 
@@ -217,7 +292,7 @@ func (e *NewAPIError) ToClaudeError() ClaudeError {
 		if openAIError, ok := e.RelayError.(OpenAIError); ok {
 			result = ClaudeError{
 				Message: e.Error(),
-				Type:    fmt.Sprintf("%v", openAIError.Code),
+				Type:    claudeErrorType(openAIError, e.StatusCode),
 			}
 		}
 	case ErrorTypeClaudeError:
@@ -235,6 +310,9 @@ func (e *NewAPIError) ToClaudeError() ClaudeError {
 	}
 	if result.Message == "" {
 		result.Message = string(e.errorType)
+	}
+	if result.Type == "" {
+		result.Type = protocolErrorType(e.StatusCode)
 	}
 	return result
 }
@@ -320,7 +398,7 @@ func WithOpenAIError(openAIError OpenAIError, statusCode int, ops ...NewAPIError
 		if openAIError.Code != nil {
 			code = fmt.Sprintf("%v", openAIError.Code)
 		} else {
-			code = "unknown_error"
+			code = unknownErrorCode
 		}
 	}
 	if openAIError.Type == "" {

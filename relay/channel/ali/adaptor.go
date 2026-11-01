@@ -52,6 +52,13 @@ func (a *Adaptor) ConvertGeminiRequest(*gin.Context, *relaycommon.RelayInfo, *dt
 }
 
 func (a *Adaptor) ConvertClaudeRequest(c *gin.Context, info *relaycommon.RelayInfo, req *dto.ClaudeRequest) (any, error) {
+	// This channel forwards the client's envelope to Anthropic verbatim, so it
+	// never passes through the claude adaptor's converter and has to apply the
+	// undeclared-field policy itself.
+	if !info.ChannelOtherSettings.AllowClaudeExtraFields {
+		req.DropUndeclaredFields()
+	}
+
 	if supportsAliAnthropicMessages(info.UpstreamModelName) {
 		return req, nil
 	}

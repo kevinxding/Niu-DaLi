@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
+	"sync"
 
 	kitutil "github.com/QuantumNous/new-api/relaykit/relayconvert/kitutil"
 	"github.com/QuantumNous/new-api/relaykit/types"
@@ -257,6 +259,79 @@ type ClaudeRequest struct {
 	// ServiceTier specifies upstream service level and may affect billing.
 	// This field is filtered by default and can be enabled via channel setting allow_service_tier.
 	ServiceTier string `json:"service_tier,omitempty"`
+	// Extra carries top-level fields this envelope does not declare. Claude grows
+	// parameters faster than the struct can track, and rebuilding the body from a
+	// fixed field list silently drops them. The values are kept verbatim and
+	// merged back on the way out; channels opt in with allow_claude_extra_fields.
+	Extra map[string]json.RawMessage `json:"-"`
+}
+
+// DropUndeclaredFields removes the top-level fields this envelope does not
+// declare, so they cannot reach an upstream.
+//
+// Every channel that writes a Claude envelope has to call this unless the
+// channel opted in. It exists as one method rather than as an assignment at each
+// call site because a channel may forward the client's envelope verbatim without
+// going through ConvertClaudeRequest on the claude adaptor at all.
+func (r *ClaudeRequest) DropUndeclaredFields() {
+	if r != nil {
+		r.Extra = nil
+	}
+}
+
+// claudeRequestFields is the set of top-level names this envelope declares. It is
+// derived from the struct tags once so Extra cannot drift from the definition.
+var claudeRequestFields = sync.OnceValue(func() map[string]struct{} {
+	return GetJSONFieldNames(reflect.TypeFor[ClaudeRequest]())
+})
+
+func (c *ClaudeRequest) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := kitutil.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	type alias ClaudeRequest
+	var declared alias
+	if err := kitutil.Unmarshal(data, &declared); err != nil {
+		return err
+	}
+	*c = ClaudeRequest(declared)
+
+	fields := claudeRequestFields()
+	for key, value := range raw {
+		if _, ok := fields[key]; ok {
+			continue
+		}
+		if c.Extra == nil {
+			c.Extra = make(map[string]json.RawMessage)
+		}
+		c.Extra[key] = value
+	}
+	return nil
+}
+
+func (c ClaudeRequest) MarshalJSON() ([]byte, error) {
+	type alias ClaudeRequest
+	base, err := kitutil.Marshal(alias(c))
+	if err != nil {
+		return nil, err
+	}
+	if len(c.Extra) == 0 {
+		// Nothing to re-attach, so the declared envelope is emitted exactly as the
+		// encoder produced it and the common path pays nothing extra.
+		return base, nil
+	}
+	var merged map[string]json.RawMessage
+	if err := kitutil.Unmarshal(base, &merged); err != nil {
+		return nil, err
+	}
+	for key, value := range c.Extra {
+		if _, declared := merged[key]; declared {
+			continue
+		}
+		merged[key] = value
+	}
+	return kitutil.Marshal(merged)
 }
 
 // OutputConfigForEffort just for extract effort
