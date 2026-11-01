@@ -22,6 +22,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/setting/operation_setting"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -1696,14 +1697,18 @@ type MultiKeyStatusResponse struct {
 	EnabledCount        int `json:"enabled_count"`
 	ManualDisabledCount int `json:"manual_disabled_count"`
 	AutoDisabledCount   int `json:"auto_disabled_count"`
+	// Consecutive balance failures a key may hit before it is auto-disabled
+	BalanceFailureThreshold int `json:"balance_failure_threshold"`
 }
 
 type KeyStatus struct {
-	Index        int    `json:"index"`
-	Status       int    `json:"status"` // 1: enabled, 2: disabled
-	DisabledTime int64  `json:"disabled_time,omitempty"`
-	Reason       string `json:"reason,omitempty"`
-	KeyPreview   string `json:"key_preview"` // first 10 chars of key for identification
+	Index           int    `json:"index"`
+	Status          int    `json:"status"` // 1: enabled, 2: disabled
+	DisabledTime    int64  `json:"disabled_time,omitempty"`
+	Reason          string `json:"reason,omitempty"`
+	KeyPreview      string `json:"key_preview"`      // first 10 chars of key for identification
+	UsedQuota       int64  `json:"used_quota"`       // quota consumed through this key
+	BalanceFailures int    `json:"balance_failures"` // current consecutive balance-exhausted failures
 }
 
 // ManageMultiKeys handles multi-key management operations
@@ -1754,6 +1759,11 @@ func ManageMultiKeys(c *gin.Context) {
 	switch request.Action {
 	case "get_key_status":
 		keys := channel.GetKeys()
+		usedQuotas, err := model.GetChannelKeyUsedQuotas(channel.Id)
+		if err != nil {
+			common.ApiError(c, err)
+			return
+		}
 
 		// Default pagination parameters
 		page := request.Page
@@ -1807,11 +1817,13 @@ func ManageMultiKeys(c *gin.Context) {
 			}
 
 			allKeyStatusList = append(allKeyStatusList, KeyStatus{
-				Index:        i,
-				Status:       status,
-				DisabledTime: disabledTime,
-				Reason:       reason,
-				KeyPreview:   keyPreview,
+				Index:           i,
+				Status:          status,
+				DisabledTime:    disabledTime,
+				Reason:          reason,
+				KeyPreview:      keyPreview,
+				UsedQuota:       usedQuotas[model.ChannelKeyHash(key)],
+				BalanceFailures: service.KeyBalanceFailures(channel.Id, key),
 			})
 		}
 
@@ -1851,14 +1863,15 @@ func ManageMultiKeys(c *gin.Context) {
 			"success": true,
 			"message": "",
 			"data": MultiKeyStatusResponse{
-				Keys:                pageKeyStatusList,
-				Total:               filteredTotal, // Total of filtered results
-				Page:                page,
-				PageSize:            pageSize,
-				TotalPages:          totalPages,
-				EnabledCount:        enabledCount,        // Overall statistics
-				ManualDisabledCount: manualDisabledCount, // Overall statistics
-				AutoDisabledCount:   autoDisabledCount,   // Overall statistics
+				Keys:                    pageKeyStatusList,
+				Total:                   filteredTotal, // Total of filtered results
+				Page:                    page,
+				PageSize:                pageSize,
+				TotalPages:              totalPages,
+				EnabledCount:            enabledCount,        // Overall statistics
+				ManualDisabledCount:     manualDisabledCount, // Overall statistics
+				AutoDisabledCount:       autoDisabledCount,   // Overall statistics
+				BalanceFailureThreshold: operation_setting.MultiKeyBalanceFailureThreshold,
 			},
 		})
 		return

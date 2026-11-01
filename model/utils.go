@@ -63,6 +63,8 @@ func addNewRecord(type_ int, id int, value int) {
 }
 
 func batchUpdate() {
+	flushChannelKeyUsageBatch()
+
 	// check if there's any data to update
 	hasData := false
 	for i := range BatchUpdateTypeCount {

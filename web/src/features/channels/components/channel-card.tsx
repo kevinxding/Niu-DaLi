@@ -23,13 +23,11 @@ import { useTranslation } from 'react-i18next'
 import { GroupBadge } from '@/components/group-badge'
 import { StatusBadgeTypeContext } from '@/components/status-badge'
 
-import { CHANNEL_STATUS } from '../constants'
+import { CHANNEL_STATUS, SENSITIVE_MASK } from '../constants'
 import { isTagAggregateRow, parseGroupsList } from '../lib'
 import type { Channel } from '../types'
 import { ChannelRowActionsLayoutContext } from './channel-row-actions-context'
 import { useChannels } from './channels-provider'
-
-const SENSITIVE_MASK = '••••'
 
 /**
  * Bespoke channel card for the card view. Reuses every column's existing cell

@@ -945,13 +945,18 @@ func testChannelForHealthCheck(ctx context.Context, channel *model.Channel, test
 
 	if newAPIError == nil {
 		summary.Succeeded++
+		if channel.ChannelInfo.IsMultiKey {
+			service.ResetKeyBalanceFailures(channel.Id, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey))
+		}
 	} else {
 		summary.Failed++
 	}
 
 	if allowDisable && isChannelEnabled && shouldBanChannel && channel.GetAutoBan() {
-		processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, nil)
-		summary.Disabled++
+		// A multi-key balance failure below its threshold is counted, not disabled.
+		if processChannelError(result.context, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(result.context, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError, nil) {
+			summary.Disabled++
+		}
 	}
 
 	if result.localErr == nil && !isChannelEnabled && service.ShouldEnableChannel(newAPIError, channel.Status) {

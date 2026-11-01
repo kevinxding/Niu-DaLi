@@ -65,6 +65,7 @@ import {
   CHANNEL_TYPE_VLLM,
   CHANNEL_TYPE_SGLANG,
   MODEL_FETCHABLE_TYPES,
+  SENSITIVE_MASK,
 } from '../constants'
 import {
   formatRelativeTime,
@@ -331,7 +332,6 @@ function TagWeightCell({ channel }: { channel: TagRow }) {
  * notation (e.g. "$28万"); the precise value stays available in the tooltip.
  */
 const MAX_INLINE_BALANCE_CHARS = 8
-const SENSITIVE_MASK = '••••'
 
 /**
  * Balance cell component with click to update

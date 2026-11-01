@@ -61,16 +61,32 @@ func ShouldRetryRelayError(c *gin.Context, openaiErr *types.NewAPIError, retryTi
 	return DecideRelayRetry(c, openaiErr, retryTimes).Action == "retry"
 }
 
-func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) {
+// ProcessChannelError logs an upstream channel error and, when the disable
+// rules match, schedules disabling the channel or its key. It reports whether a
+// disable was scheduled.
+func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError, relayInfo *relaycommon.RelayInfo) (disableScheduled bool) {
 	if err == nil {
-		return
+		return false
 	}
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.MaskSensitiveErrorWithStatusCode())))
 	if ShouldDisableChannel(err) && channelError.AutoBan {
-		reason := err.MaskSensitiveErrorWithStatusCode()
-		gopool.Go(func() {
-			DisableChannel(channelError, reason)
-		})
+		disable := true
+		// A key of a multi-key channel survives transient balance errors until it
+		// fails with them several times in a row.
+		if channelError.IsMultiKey && channelError.UsingKey != "" && IsBalanceExhaustedError(err) {
+			failures, reached := ReachedKeyBalanceFailureThreshold(channelError.ChannelId, channelError.UsingKey)
+			disable = reached
+			if !reached {
+				logger.LogWarn(c, fmt.Sprintf("channel #%d key balance failure %d/%d, key stays enabled", channelError.ChannelId, failures, operation_setting.MultiKeyBalanceFailureThreshold))
+			}
+		}
+		if disable {
+			reason := err.MaskSensitiveErrorWithStatusCode()
+			gopool.Go(func() {
+				DisableChannel(channelError, reason)
+			})
+			disableScheduled = true
+		}
 	}
 
 	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
@@ -96,4 +112,5 @@ func ProcessChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		useTimeSeconds := int(time.Since(startTime).Seconds())
 		model.RecordErrorLog(c, userId, channelError.ChannelId, modelName, tokenName, err.MaskSensitiveErrorWithStatusCode(), tokenId, useTimeSeconds, common.GetContextKeyBool(c, constant.ContextKeyIsStream), userGroup, other)
 	}
+	return disableScheduled
 }
