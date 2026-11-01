@@ -100,3 +100,43 @@ func TestSaveStatusStateFromSingleKeySnapshotPreservesUnownedColumns(t *testing.
 	assert.Equal(t, "manual operation", otherInfo["status_reason"])
 	assert.Equal(t, float64(1234), otherInfo["status_time"])
 }
+
+func TestSequentialMultiKeyFailsOverToNextKeyInOrder(t *testing.T) {
+	setupChannelStatusTest(t)
+
+	channel := Channel{
+		Name:   "multi-key-sequential",
+		Key:    "key-a\nkey-b\nkey-c",
+		Status: common.ChannelStatusEnabled,
+		ChannelInfo: ChannelInfo{
+			IsMultiKey:   true,
+			MultiKeySize: 3,
+			MultiKeyMode: constant.MultiKeyModeSequential,
+		},
+	}
+	require.NoError(t, DB.Create(&channel).Error)
+
+	steps := []struct {
+		disableKey string
+		wantKey    string
+		wantIndex  int
+	}{
+		{wantKey: "key-a", wantIndex: 0},
+		{disableKey: "key-a", wantKey: "key-b", wantIndex: 1},
+		{disableKey: "key-b", wantKey: "key-c", wantIndex: 2},
+	}
+	for _, step := range steps {
+		if step.disableKey != "" {
+			require.True(t, UpdateChannelStatus(channel.Id, step.disableKey, common.ChannelStatusAutoDisabled, "insufficient balance"))
+		}
+		stored, err := GetChannelById(channel.Id, true)
+		require.NoError(t, err)
+		// Repeated selections must stay on the same key until it is disabled.
+		for range 2 {
+			key, index, apiErr := stored.GetNextEnabledKey()
+			require.Nil(t, apiErr)
+			assert.Equal(t, step.wantKey, key)
+			assert.Equal(t, step.wantIndex, index)
+		}
+	}
+}
