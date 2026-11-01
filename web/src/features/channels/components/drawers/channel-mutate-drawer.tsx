@@ -4300,6 +4300,14 @@ export function ChannelMutateDrawer({
                     keyPlaceholder = t(
                       'Enter key, format: AccessKey|SecretAccessKey|Region'
                     )
+                  } else if (
+                    currentType === 41 &&
+                    vertexKeyType === 'json' &&
+                    isBatchMode
+                  ) {
+                    keyPlaceholder = t(
+                      'Paste service account JSON keys one after another, or a JSON array'
+                    )
                   } else if (isBatchMode) {
                     keyPlaceholder = t(
                       'Enter one key per line for batch creation'
@@ -4327,6 +4335,14 @@ export function ChannelMutateDrawer({
                           </span>
                         )}
                       </>
+                    )
+                  } else if (
+                    currentType === 41 &&
+                    vertexKeyType === 'json' &&
+                    isBatchMode
+                  ) {
+                    keyDescription = t(
+                      'Each service account JSON becomes one key. Paste them one after another (one per line or pretty-printed), as a JSON array, or upload the files above.'
                     )
                   } else if (isBatchMode) {
                     keyDescription = t(

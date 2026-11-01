@@ -177,14 +177,59 @@ function isCodexCredential(value: string | undefined): boolean {
   }
 }
 
-function isVertexJsonKey(value: string | undefined): boolean {
-  try {
-    const parsed = parseOptionalJson(value)
-    if (parsed === undefined) return true
-    if (Array.isArray(parsed)) {
-      return parsed.every((item) => isJsonObjectValue(item))
+/**
+ * Split text holding JSON objects written one after another (one per line,
+ * pretty-printed or comma separated) into the source of each object. Braces
+ * inside strings are ignored. Returns null when anything other than objects,
+ * whitespace or commas sits between them.
+ */
+function splitJsonObjectSequence(text: string): string[] | null {
+  const objects: string[] = []
+  let depth = 0
+  let start = -1
+  let inString = false
+  let escaped = false
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escaped) escaped = false
+      else if (ch === '\\') escaped = true
+      else if (ch === '"') inString = false
+      continue
     }
-    return isJsonObjectValue(parsed)
+    if (ch === '"' && depth > 0) {
+      inString = true
+    } else if (ch === '{') {
+      if (depth === 0) start = i
+      depth++
+    } else if (ch === '}' && depth > 0) {
+      depth--
+      if (depth === 0) objects.push(text.slice(start, i + 1))
+    } else if (depth === 0 && !/[\s,]/.test(ch)) {
+      return null
+    }
+  }
+  return depth === 0 ? objects : null
+}
+
+/**
+ * Vertex AI service account keys: a JSON array of objects, or one or more JSON
+ * objects pasted one after another. Mirrors getVertexArrayKeys on the server.
+ */
+function isVertexJsonKey(value: string | undefined): boolean {
+  const trimmed = value?.trim()
+  if (!trimmed) return true
+  try {
+    if (trimmed.startsWith('[')) {
+      const parsed: unknown = JSON.parse(trimmed)
+      return Array.isArray(parsed) && parsed.every(isJsonObjectValue)
+    }
+    const objects = splitJsonObjectSequence(trimmed)
+    return (
+      objects !== null &&
+      objects.length > 0 &&
+      objects.every((source) => isJsonObjectValue(JSON.parse(source)))
+    )
   } catch {
     return false
   }
