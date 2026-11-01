@@ -54,7 +54,7 @@ export function getPinnedColumnMap(pinnedColumns?: DataTablePinnedColumn[]) {
   return new Map(pinnedColumns.map((column) => [column.columnId, column]))
 }
 
-function getPinnedColumnClassName(
+export function getPinnedColumnClassName(
   pinnedColumn: DataTablePinnedColumn,
   kind: 'header' | 'cell'
 ) {
@@ -69,7 +69,7 @@ function getPinnedColumnClassName(
     edgeClassName,
     kind === 'header'
       ? '[background-color:var(--table-header-bg,var(--table-header))] group-hover:[background-color:var(--table-header-hover)] z-30'
-      : 'bg-background z-10 group-hover:[background-color:color-mix(in_oklch,var(--muted)_50%,var(--background))] group-data-[state=selected]:bg-muted',
+      : '[background-color:var(--table-pinned-bg,var(--background))] z-10 group-hover:[background-color:color-mix(in_oklch,var(--muted)_50%,var(--background))] group-data-[state=selected]:bg-muted',
     pinnedColumn.className,
     kind === 'header'
       ? pinnedColumn.headerClassName

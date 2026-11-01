@@ -39,6 +39,9 @@ const (
 	ContextKeyChannelIsMultiKey        ContextKey = "channel_is_multi_key"
 	ContextKeyChannelMultiKeyIndex     ContextKey = "channel_multi_key_index"
 	ContextKeyChannelKey               ContextKey = "channel_key"
+	// ContextKeyChannelPinnedKeyIndex makes channel setup use this multi-key
+	// index instead of the strategy's choice; set only by admin key tests.
+	ContextKeyChannelPinnedKeyIndex ContextKey = "channel_pinned_key_index"
 
 	ContextKeyAutoGroup           ContextKey = "auto_group"
 	ContextKeyAutoGroupIndex      ContextKey = "auto_group_index"
