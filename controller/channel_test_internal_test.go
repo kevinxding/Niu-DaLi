@@ -493,3 +493,78 @@ func TestTestAllChannelsRejectsExistingActiveTask(t *testing.T) {
 	require.Contains(t, recorder.Body.String(), existing.TaskID)
 	require.Contains(t, recorder.Body.String(), "已有通道测试任务正在运行或等待中")
 }
+
+func TestValidateChannelVertexRegion(t *testing.T) {
+	tests := []struct {
+		name    string
+		region  string
+		wantErr string
+	}{
+		{name: "plain region", region: "us-central1"},
+		{name: "global endpoint", region: "global"},
+		{name: "model region map", region: `{"default": "us-central1", "claude-sonnet-4": "us-east5"}`},
+		{name: "empty", region: "", wantErr: "部署地区不能为空"},
+		{name: "map without default", region: `{"claude-sonnet-4": "us-east5"}`, wantErr: "必须包含default"},
+		{name: "broken map", region: `{"default": "us-central1"`, wantErr: "JSON 格式错误"},
+		{name: "two regions without map", region: "us-central1 us-east5", wantErr: "单个地区"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := &model.Channel{Type: constant.ChannelTypeVertexAi, Other: test.region}
+
+			err := validateChannel(channel, false)
+
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
+func TestGetVertexArrayKeysAcceptsArraysAndObjectSequences(t *testing.T) {
+	// The private key holds escaped newlines and braces that must not split keys.
+	keyA := `{"type":"service_account","project_id":"a","private_key":"-----BEGIN PRIVATE KEY-----\nab{c}\"d\n-----END PRIVATE KEY-----\n"}`
+	keyB := `{"type":"service_account","project_id":"b"}`
+	prettyB := "{\n  \"type\": \"service_account\",\n  \"project_id\": \"b\"\n}"
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{name: "json array", input: "[" + keyA + "," + keyB + "]", want: []string{keyA, keyB}},
+		{name: "single object", input: keyA, want: []string{keyA}},
+		{name: "one object per line", input: keyA + "\n" + keyB + "\n", want: []string{keyA, keyB}},
+		{name: "pretty printed objects", input: keyA + "\n\n" + prettyB, want: []string{keyA, keyB}},
+		{name: "comma separated objects", input: keyA + ",\n" + keyB, want: []string{keyA, keyB}},
+		{name: "empty", input: "  \n", want: nil},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			keys, err := getVertexArrayKeys(test.input)
+
+			require.NoError(t, err)
+			require.Len(t, keys, len(test.want))
+			for i, want := range test.want {
+				var gotKey, wantKey map[string]any
+				require.NoError(t, common.Unmarshal([]byte(keys[i]), &gotKey))
+				require.NoError(t, common.Unmarshal([]byte(want), &wantKey))
+				assert.Equal(t, wantKey, gotKey)
+				assert.NotContains(t, keys[i], "\n", "each key is stored on its own line")
+			}
+		})
+	}
+
+	for _, input := range []string{
+		keyA + "\nnot-json",
+		`{"type":"service_account"`,
+		`{"type": service_account}`,
+		"[" + keyA,
+	} {
+		_, err := getVertexArrayKeys(input)
+		assert.Error(t, err, input)
+	}
+}

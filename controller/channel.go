@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -642,13 +643,18 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 			return fmt.Errorf("部署地区不能为空")
 		}
 
-		regionMap, err := common.StrToMap(channel.Other)
-		if err != nil {
-			return fmt.Errorf("部署地区必须是标准的Json格式，例如{\"default\": \"us-central1\", \"region2\": \"us-east1\"}")
-		}
-
-		if regionMap["default"] == nil {
-			return fmt.Errorf("部署地区必须包含default字段")
+		// A plain region (us-central1) applies to every model; a JSON object maps
+		// models to regions and must name a default. See vertex.GetModelRegion.
+		if strings.HasPrefix(strings.TrimSpace(channel.Other), "{") {
+			regionMap, err := common.StrToMap(channel.Other)
+			if err != nil {
+				return fmt.Errorf("部署地区 JSON 格式错误，例如{\"default\": \"us-central1\", \"claude-sonnet-4\": \"us-east5\"}")
+			}
+			if regionMap["default"] == nil {
+				return fmt.Errorf("部署地区必须包含default字段")
+			}
+		} else if !vertexRegionPattern.MatchString(channel.Other) {
+			return fmt.Errorf("部署地区必须是单个地区（如 us-central1）或 JSON 映射，例如{\"default\": \"us-central1\", \"claude-sonnet-4\": \"us-east5\"}")
 		}
 	}
 
@@ -714,14 +720,63 @@ type AddChannelRequest struct {
 	Channel                   *model.Channel        `json:"channel"`
 }
 
+// vertexRegionPattern matches a single Vertex AI region such as us-central1 or global.
+var vertexRegionPattern = regexp.MustCompile(`^[a-z0-9-]+$`)
+
+// getVertexArrayKeys splits Vertex AI service account keys into one compact
+// JSON object per key. It accepts a JSON array of keys, or one or more JSON
+// objects written one after another (pasted on separate lines, pretty-printed
+// or separated by commas).
 func getVertexArrayKeys(keys string) ([]string, error) {
-	if keys == "" {
+	trimmed := strings.TrimSpace(keys)
+	if trimmed == "" {
 		return nil, nil
 	}
 	var keyArray []any
-	err := common.Unmarshal([]byte(keys), &keyArray)
-	if err != nil {
-		return nil, fmt.Errorf("批量添加 Vertex AI 必须使用标准的JsonArray格式，例如[{key1}, {key2}...]，请检查输入: %w", err)
+	if strings.HasPrefix(trimmed, "[") {
+		if err := common.Unmarshal([]byte(trimmed), &keyArray); err != nil {
+			return nil, fmt.Errorf("Vertex AI 密钥 JSON 数组格式错误，例如[{key1}, {key2}...]，请检查输入: %w", err)
+		}
+	} else {
+		// Split top-level objects by brace depth, ignoring braces inside strings.
+		depth, start, inString, escaped := 0, -1, false, false
+		for i := range len(trimmed) {
+			ch := trimmed[i]
+			if inString {
+				switch {
+				case escaped:
+					escaped = false
+				case ch == '\\':
+					escaped = true
+				case ch == '"':
+					inString = false
+				}
+				continue
+			}
+			switch {
+			case ch == '"' && depth > 0:
+				inString = true
+			case ch == '{':
+				if depth == 0 {
+					start = i
+				}
+				depth++
+			case ch == '}' && depth > 0:
+				depth--
+				if depth == 0 {
+					var key map[string]any
+					if err := common.Unmarshal([]byte(trimmed[start:i+1]), &key); err != nil {
+						return nil, fmt.Errorf("第 %d 个 Vertex AI 密钥不是有效的 JSON: %w", len(keyArray)+1, err)
+					}
+					keyArray = append(keyArray, key)
+				}
+			case depth == 0 && ch != ',' && ch != ' ' && ch != '\t' && ch != '\r' && ch != '\n':
+				return nil, fmt.Errorf("Vertex AI 密钥必须是 JSON 对象，可每行粘贴一个或使用 JSON 数组 [{key1}, {key2}...]")
+			}
+		}
+		if depth != 0 {
+			return nil, fmt.Errorf("Vertex AI 密钥 JSON 不完整，请检查括号是否成对")
+		}
 	}
 	cleanKeys := make([]string, 0, len(keyArray))
 	for _, key := range keyArray {
@@ -730,7 +785,7 @@ func getVertexArrayKeys(keys string) ([]string, error) {
 		case string:
 			keyStr = strings.TrimSpace(v)
 		default:
-			bytes, err := json.Marshal(v)
+			bytes, err := common.Marshal(v)
 			if err != nil {
 				return nil, fmt.Errorf("Vertex AI key JSON 编码失败: %w", err)
 			}
@@ -1224,23 +1279,17 @@ func UpdateChannel(c *gin.Context) {
 					existingKeys = strings.Split(strings.Trim(originChannel.Key, "\n"), "\n")
 				}
 
-				// 处理 Vertex AI 的特殊情况
+				// 处理 Vertex AI 的特殊情况：JSON 数组、单个或多个连续的 JSON 密钥
 				if channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
-					// 尝试解析新密钥为JSON数组
-					if strings.HasPrefix(strings.TrimSpace(channel.Key), "[") {
-						array, err := getVertexArrayKeys(channel.Key)
-						if err != nil {
-							c.JSON(http.StatusOK, gin.H{
-								"success": false,
-								"message": "追加密钥解析失败: " + err.Error(),
-							})
-							return
-						}
-						newKeys = array
-					} else {
-						// 单个JSON密钥
-						newKeys = []string{channel.Key}
+					array, err := getVertexArrayKeys(channel.Key)
+					if err != nil {
+						c.JSON(http.StatusOK, gin.H{
+							"success": false,
+							"message": "追加密钥解析失败: " + err.Error(),
+						})
+						return
 					}
+					newKeys = array
 				} else {
 					// 普通渠道的处理
 					inputKeys := strings.SplitSeq(channel.Key, "\n")
@@ -1277,7 +1326,19 @@ func UpdateChannel(c *gin.Context) {
 				channel.Key = strings.Join(allKeys, "\n")
 			}
 		case "replace":
-			// 覆盖模式：直接使用新密钥（默认行为，不需要特殊处理）
+			// 覆盖模式：直接使用新密钥；Vertex AI JSON 密钥统一拆成每行一个
+			if channel.Key != "" && channel.Type == constant.ChannelTypeVertexAi && channel.GetOtherSettings().VertexKeyType != dto.VertexKeyTypeAPIKey {
+				array, err := getVertexArrayKeys(channel.Key)
+				if err != nil {
+					c.JSON(http.StatusOK, gin.H{
+						"success": false,
+						"message": "覆盖密钥解析失败: " + err.Error(),
+					})
+					return
+				}
+				channel.Key = strings.Join(array, "\n")
+				channel.ChannelInfo.MultiKeySize = len(array)
+			}
 		}
 	}
 	err = channel.Update()
