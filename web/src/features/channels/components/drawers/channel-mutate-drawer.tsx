@@ -152,6 +152,7 @@ import {
   FIELD_DESCRIPTIONS,
   FIELD_PLACEHOLDERS,
   MODEL_FETCHABLE_TYPES,
+  MULTI_KEY_MODES,
   OPENAI_FIELD_PASSTHROUGH_TYPES,
 } from '../../constants'
 import { useChannelKeyDisclosure } from '../../hooks/use-channel-key-disclosure'
@@ -4524,16 +4525,10 @@ export function ChannelMutateDrawer({
                       <FormLabel>{t('Multi-Key Strategy')}</FormLabel>
                       <Select
                         disabled={sensitiveLocked}
-                        items={[
-                          {
-                            value: 'random',
-                            label: t('Random'),
-                          },
-                          {
-                            value: 'polling',
-                            label: t('Polling'),
-                          },
-                        ]}
+                        items={MULTI_KEY_MODES.map((option) => ({
+                          value: option.value,
+                          label: t(option.label),
+                        }))}
                         onValueChange={field.onChange}
                         value={field.value}
                       >
@@ -4544,27 +4539,33 @@ export function ChannelMutateDrawer({
                         </FormControl>
                         <SelectContent alignItemWithTrigger={false}>
                           <SelectGroup>
-                            <SelectItem value='random'>
-                              {t('Random')}
-                            </SelectItem>
-                            <SelectItem value='polling'>
-                              {t('Polling')}
-                            </SelectItem>
+                            {MULTI_KEY_MODES.map((option) => (
+                              <SelectItem
+                                key={option.value}
+                                value={option.value}
+                              >
+                                {t(option.label)}
+                              </SelectItem>
+                            ))}
                           </SelectGroup>
                         </SelectContent>
                       </Select>
                       <FormDescription>
-                        {multiKeyType === 'polling' ? (
+                        {multiKeyType === 'random' &&
+                          t(
+                            'Randomly select a key from the pool for each request'
+                          )}
+                        {multiKeyType === 'polling' && (
                           <span className='text-warning'>
                             {t(
                               'Polling mode requires Redis and memory cache, otherwise performance will be significantly degraded'
                             )}
                           </span>
-                        ) : (
-                          t(
-                            'Randomly select a key from the pool for each request'
-                          )
                         )}
+                        {multiKeyType === 'sequential' &&
+                          t(
+                            'Use keys in order, switching to the next key only after the current one is auto-disabled (e.g. out of balance)'
+                          )}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>

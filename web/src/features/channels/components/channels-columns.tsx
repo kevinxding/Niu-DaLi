@@ -21,6 +21,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import type { ColumnDef } from '@tanstack/react-table'
 import {
   AlertTriangle,
+  ArrowDown01,
   ChevronDown,
   ChevronRight,
   ListOrdered,
@@ -818,12 +819,15 @@ export function useChannelsColumns(
           const channel = row.original as Channel
           const isMultiKey = isMultiKeyChannel(channel)
           const multiKeyMode = channel.channel_info?.multi_key_mode ?? 'random'
-          const MultiKeyModeIcon =
-            multiKeyMode === 'random' ? Shuffle : ListOrdered
-          const multiKeyTooltip =
-            multiKeyMode === 'random'
-              ? t('Multi-key: Random rotation')
-              : t('Multi-key: Polling rotation')
+          let MultiKeyModeIcon = Shuffle
+          let multiKeyTooltip = t('Multi-key: Random rotation')
+          if (multiKeyMode === 'polling') {
+            MultiKeyModeIcon = ListOrdered
+            multiKeyTooltip = t('Multi-key: Polling rotation')
+          } else if (multiKeyMode === 'sequential') {
+            MultiKeyModeIcon = ArrowDown01
+            multiKeyTooltip = t('Multi-key: Sequential')
+          }
 
           const ionetMeta = parseIonetMeta(channel.other_info)
           const isIonet = ionetMeta?.source === 'ionet'

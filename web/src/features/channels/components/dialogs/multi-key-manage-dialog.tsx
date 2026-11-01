@@ -53,7 +53,7 @@ import {
   disableAllMultiKeys,
   deleteDisabledMultiKeys,
 } from '../../api'
-import { MULTI_KEY_FILTER_OPTIONS } from '../../constants'
+import { MULTI_KEY_FILTER_OPTIONS, MULTI_KEY_MODES } from '../../constants'
 import {
   channelsQueryKeys,
   formatTimestamp,
@@ -247,11 +247,12 @@ export function MultiKeyManageDialog({
             />
             {currentRow.channel_info?.multi_key_mode && (
               <StatusBadge
-                label={
-                  currentRow.channel_info.multi_key_mode === 'random'
-                    ? t('Random')
-                    : t('Polling')
-                }
+                label={t(
+                  MULTI_KEY_MODES.find(
+                    (option) =>
+                      option.value === currentRow.channel_info.multi_key_mode
+                  )?.label ?? 'Random'
+                )}
                 variant='neutral'
                 copyable={false}
               />
