@@ -61,9 +61,12 @@ import {
 } from '../../constants'
 import {
   channelsQueryKeys,
+  formatResponseTime,
   formatTimestamp,
   getMultiKeyStatusConfig,
   getMultiKeyConfirmMessage,
+  getResponseTimeConfig,
+  handleTestChannel,
   isDestructiveAction,
 } from '../../lib'
 import type { KeyStatus, MultiKeyConfirmAction } from '../../types'
@@ -74,6 +77,18 @@ import { MultiKeyTableRowActions } from './multi-key-table-row-actions'
 type MultiKeyManageDialogProps = {
   open: boolean
   onOpenChange: (open: boolean) => void
+}
+
+type KeyTestResult = {
+  success: boolean
+  responseTime?: number
+  message?: string
+}
+
+// Test state is keyed by channel and key so a test that finishes after the
+// dialog switched channels cannot land on another channel's row.
+function keyTestId(channelId: number, keyIndex: number) {
+  return `${channelId}:${keyIndex}`
 }
 
 export function MultiKeyManageDialog({
@@ -107,12 +122,19 @@ export function MultiKeyManageDialog({
   const [confirmAction, setConfirmAction] =
     useState<MultiKeyConfirmAction | null>(null)
   const [isPerformingAction, setIsPerformingAction] = useState(false)
+  const [testingKeys, setTestingKeys] = useState<ReadonlySet<string>>(
+    () => new Set()
+  )
+  const [testResults, setTestResults] = useState<Record<string, KeyTestResult>>(
+    {}
+  )
 
   // Reset and load data when dialog opens
   useEffect(() => {
     if (open && currentRow) {
       setCurrentPage(1)
       setStatusFilter(null)
+      setTestResults({})
       loadKeyStatus(1, pageSize, null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,6 +240,57 @@ export function MultiKeyManageDialog({
       setIsPerformingAction(false)
       setConfirmAction(null)
     }
+  }
+
+  const handleTestKey = async (keyIndex: number) => {
+    if (!currentRow) return
+    const testId = keyTestId(currentRow.id, keyIndex)
+    setTestingKeys((prev) => new Set(prev).add(testId))
+    await handleTestChannel(
+      currentRow.id,
+      { keyIndex },
+      (success, responseTime, error) => {
+        setTestResults((prev) => ({
+          ...prev,
+          [testId]: { success, responseTime, message: error },
+        }))
+      }
+    )
+    setTestingKeys((prev) => {
+      const next = new Set(prev)
+      next.delete(testId)
+      return next
+    })
+  }
+
+  const renderTestResult = (keyIndex: number) => {
+    if (!currentRow) return null
+    const result = testResults[keyTestId(currentRow.id, keyIndex)]
+    if (!result) return null
+    if (!result.success) {
+      return (
+        <StatusBadge
+          label={t('Test failed')}
+          variant='danger'
+          copyable={false}
+          title={result.message}
+        />
+      )
+    }
+    const responseTime = result.responseTime ?? 0
+    return (
+      <StatusBadge
+        label={
+          responseTime > 0
+            ? t('Test passed · {{duration}}', {
+                duration: formatResponseTime(responseTime, t),
+              })
+            : t('Test passed')
+        }
+        variant={getResponseTimeConfig(responseTime).variant}
+        copyable={false}
+      />
+    )
   }
 
   const renderStatusBadge = (status: number) => {
@@ -393,7 +466,8 @@ export function MultiKeyManageDialog({
             )}
             {!isLoading && !(keys.length === 0) && (
               <StaticDataTable
-                className='rounded-none border-0'
+                // Pinned cells must be opaque; match the dialog surface.
+                className='rounded-none border-0 [--table-header-bg:var(--popover)] [--table-pinned-bg:var(--popover)]'
                 tableClassName='min-w-[800px]'
                 data={keys}
                 getRowKey={(key) => key.index}
@@ -408,10 +482,11 @@ export function MultiKeyManageDialog({
                   {
                     id: 'status',
                     header: t('Status'),
-                    className: 'w-32',
+                    className: 'w-36',
                     cell: (key) => (
                       <div className='flex flex-col items-start gap-1'>
                         {renderStatusBadge(key.status)}
+                        {renderTestResult(key.index)}
                         {key.status === 1 &&
                           (key.balance_failures ?? 0) > 0 && (
                             <span className='text-warning text-xs'>
@@ -455,12 +530,18 @@ export function MultiKeyManageDialog({
                     id: 'actions',
                     header: t('Actions'),
                     className: 'text-right',
+                    // The table is wider than the dialog on most screens.
+                    pinned: 'right',
                     cell: (key) => (
                       <MultiKeyTableRowActions
                         keyIndex={key.index}
                         status={key.status}
                         canDelete={canEditSensitive}
+                        isTesting={testingKeys.has(
+                          keyTestId(currentRow.id, key.index)
+                        )}
                         onAction={setConfirmAction}
+                        onTest={() => handleTestKey(key.index)}
                       />
                     ),
                   },

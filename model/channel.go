@@ -203,6 +203,19 @@ func (channel *Channel) GetKeys() []string {
 	return keys
 }
 
+// GetKeyByIndex returns one key of a multi-key channel whatever its status, so
+// an admin can test a disabled key before enabling it again.
+func (channel *Channel) GetKeyByIndex(index int) (string, *types.NewAPIError) {
+	if !channel.ChannelInfo.IsMultiKey {
+		return "", types.NewError(errors.New("channel is not in multi-key mode"), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+	}
+	keys := channel.GetKeys()
+	if index < 0 || index >= len(keys) {
+		return "", types.NewError(fmt.Errorf("key index %d is out of range", index), types.ErrorCodeChannelNoAvailableKey, types.ErrOptionWithSkipRetry())
+	}
+	return keys[index], nil
+}
+
 func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
 	// If not in multi-key mode, return the original key string directly.
 	if !channel.ChannelInfo.IsMultiKey {

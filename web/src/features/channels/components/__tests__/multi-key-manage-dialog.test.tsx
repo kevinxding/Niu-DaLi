@@ -17,7 +17,8 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, within } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { useEffect } from 'react'
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
@@ -152,4 +153,82 @@ test('key manager masks per-key used quota while sensitive information is hidden
   const firstRow = await screen.findByRole('row', { name: /^#1 / })
   expect(within(firstRow).getByText('••••')).toBeVisible()
   expect(screen.queryByText('$3')).not.toBeInTheDocument()
+})
+
+test('testing a key sends that key index and shows the result on its row only', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: { success: true, message: '', time: 1.234 },
+  })
+  const user = userEvent.setup()
+  renderDialog(true)
+
+  const secondRow = await screen.findByRole('row', { name: /^#2 / })
+  await user.click(within(secondRow).getByRole('button', { name: 'Test' }))
+
+  expect(api.get).toHaveBeenCalledWith(
+    '/api/channel/test/7',
+    expect.objectContaining({ params: { key_index: 1 } })
+  )
+  expect(
+    await within(secondRow).findByText('Test passed · 1.23s')
+  ).toBeVisible()
+  const firstRow = screen.getByRole('row', { name: /^#1 / })
+  expect(within(firstRow).queryByText(/Test passed/)).not.toBeInTheDocument()
+})
+
+test('a failed key test marks the row and keeps the upstream error as its title', async () => {
+  vi.spyOn(api, 'get').mockResolvedValue({
+    data: {
+      success: false,
+      message: 'invalid_grant: account not found',
+      time: 0.4,
+    },
+  })
+  const user = userEvent.setup()
+  renderDialog(true)
+
+  const firstRow = await screen.findByRole('row', { name: /^#1 / })
+  await user.click(within(firstRow).getByRole('button', { name: 'Test' }))
+
+  const failure = await within(firstRow).findByText('Test failed')
+  expect(failure.closest('[data-slot="status-badge"]')).toHaveAttribute(
+    'title',
+    'invalid_grant: account not found'
+  )
+  await waitFor(() =>
+    expect(within(firstRow).getByRole('button', { name: 'Test' })).toBeEnabled()
+  )
+})
+
+test('disabling one enabled key after confirming sends disable_key for that index', async () => {
+  const user = userEvent.setup()
+  renderDialog(true)
+
+  const firstRow = await screen.findByRole('row', { name: /^#1 / })
+  const secondRow = screen.getByRole('row', { name: /^#2 / })
+  expect(
+    within(secondRow).getByRole('button', { name: 'Enable' })
+  ).toBeVisible()
+  await user.click(within(firstRow).getByRole('button', { name: 'Disable' }))
+  await user.click(await screen.findByRole('button', { name: 'Continue' }))
+
+  await waitFor(() =>
+    expect(api.post).toHaveBeenCalledWith(
+      '/api/channel/multi_key/manage',
+      { channel_id: 7, action: 'disable_key', key_index: 0 },
+      expect.anything()
+    )
+  )
+})
+
+test('the actions column stays pinned to the right edge while the table scrolls', async () => {
+  renderDialog(true)
+
+  const firstRow = await screen.findByRole('row', { name: /^#1 / })
+  const header = screen.getByRole('columnheader', { name: 'Actions' })
+  const actionsCell = within(firstRow)
+    .getByRole('button', { name: 'Test' })
+    .closest('td')
+  expect(header).toHaveClass('sticky', 'right-0')
+  expect(actionsCell).toHaveClass('sticky', 'right-0')
 })

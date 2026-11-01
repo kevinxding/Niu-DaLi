@@ -28,7 +28,9 @@ import {
 } from '@/components/ui/table'
 import { cn } from '@/lib/utils'
 
+import { getPinnedColumnClassName } from '../core/column-pinning'
 import { TruncatedCell } from '../core/truncated-cell'
+import type { DataTablePinnedColumn } from '../core/types'
 import { staticDataTableClassNames } from './static-data-table-classnames'
 
 type StaticDataTableBaseProps = {
@@ -69,6 +71,8 @@ export type StaticDataTableColumn<TData = unknown> = {
   className?: string
   cellClassName?: string | ((row: TData, index: number) => string | undefined)
   cell?: (row: TData, index: number) => React.ReactNode
+  /** Keeps the column visible on this side while the table scrolls sideways. */
+  pinned?: DataTablePinnedColumn['side']
 }
 
 export function StaticDataTable<TData = unknown>(
@@ -120,7 +124,13 @@ function StaticDataTableWithColumns<TData>({
       <TableHeader>
         <TableRow className={headerRowClassName}>
           {columns.map((column) => (
-            <TableHead key={column.id} className={column.className}>
+            <TableHead
+              key={column.id}
+              className={cn(
+                column.className,
+                getStaticPinnedClassName(column, 'header')
+              )}
+            >
               {column.header}
             </TableHead>
           ))}
@@ -168,7 +178,8 @@ function StaticDataTableRow<TData>({
           key={column.id}
           className={cn(
             'max-w-full min-w-0 overflow-hidden',
-            getStaticCellClassName(column, row, index)
+            getStaticCellClassName(column, row, index),
+            getStaticPinnedClassName(column, 'cell')
           )}
         >
           {renderStaticCellContent(column, row, index)}
@@ -215,6 +226,17 @@ function getStaticCellClassName<TData>(
   return typeof column.cellClassName === 'function'
     ? column.cellClassName(row, index)
     : column.cellClassName
+}
+
+function getStaticPinnedClassName<TData>(
+  column: StaticDataTableColumn<TData>,
+  kind: 'header' | 'cell'
+) {
+  if (!column.pinned) return undefined
+  return getPinnedColumnClassName(
+    { columnId: column.id, side: column.pinned },
+    kind
+  )
 }
 
 type StaticDataTableEmptyRowProps = {

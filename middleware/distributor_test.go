@@ -16,6 +16,7 @@ import (
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/setting/model_setting"
 	"github.com/gin-gonic/gin"
+	"github.com/samber/lo"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -340,4 +341,63 @@ func TestSharedEndpointRebindsToBoundNewAPIExtension(t *testing.T) {
 	require.Nil(t, SetupContextForSelectedChannel(c, channel, "task-model"))
 	assert.Equal(t, "alpha", c.GetString("task_plugin_key"), "the first bound candidate executes regardless of the earlier pin")
 	assert.Equal(t, "alpha", c.MustGet(jsplugin.ContextKeyPinnedEndpoint).(jsplugin.PinnedEndpoint).Plugin.Meta.Key)
+}
+
+func TestSetupContextForSelectedChannelUsesPinnedMultiKeyIndex(t *testing.T) {
+	channel := &model.Channel{
+		Id:   3,
+		Type: constant.ChannelTypeOpenAI,
+		Key:  "sk-first\nsk-second\nsk-third",
+		ChannelInfo: model.ChannelInfo{
+			IsMultiKey:         true,
+			MultiKeySize:       3,
+			MultiKeyMode:       constant.MultiKeyModeSequential,
+			MultiKeyStatusList: map[int]int{0: common.ChannelStatusAutoDisabled},
+		},
+	}
+	tests := []struct {
+		name      string
+		pinned    *int
+		wantKey   string
+		wantIndex int
+		wantErr   string
+	}{
+		{name: "without a pin the strategy skips the disabled first key", wantKey: "sk-second", wantIndex: 1},
+		{name: "a pin selects a disabled key", pinned: lo.ToPtr(0), wantKey: "sk-first", wantIndex: 0},
+		{name: "a pin overrides the sequential choice", pinned: lo.ToPtr(2), wantKey: "sk-third", wantIndex: 2},
+		{name: "a pin past the last key is rejected", pinned: lo.ToPtr(3), wantErr: "key index 3 is out of range"},
+		{name: "a negative pin is rejected", pinned: lo.ToPtr(-1), wantErr: "key index -1 is out of range"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c, _ := gin.CreateTestContext(httptest.NewRecorder())
+			c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+			if tt.pinned != nil {
+				common.SetContextKey(c, constant.ContextKeyChannelPinnedKeyIndex, *tt.pinned)
+			}
+
+			setupErr := SetupContextForSelectedChannel(c, channel, "gpt-4o")
+
+			if tt.wantErr != "" {
+				require.NotNil(t, setupErr)
+				assert.Contains(t, setupErr.Error(), tt.wantErr)
+				return
+			}
+			require.Nil(t, setupErr)
+			assert.Equal(t, tt.wantKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey))
+			assert.Equal(t, tt.wantIndex, common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex))
+			assert.True(t, common.GetContextKeyBool(c, constant.ContextKeyChannelIsMultiKey))
+		})
+	}
+}
+
+func TestSetupContextForSelectedChannelRejectsPinOnSingleKeyChannel(t *testing.T) {
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	c.Request = httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	common.SetContextKey(c, constant.ContextKeyChannelPinnedKeyIndex, 0)
+
+	setupErr := SetupContextForSelectedChannel(c, &model.Channel{Id: 4, Type: constant.ChannelTypeOpenAI, Key: "sk-only"}, "gpt-4o")
+
+	require.NotNil(t, setupErr)
+	assert.Contains(t, setupErr.Error(), "not in multi-key mode")
 }
