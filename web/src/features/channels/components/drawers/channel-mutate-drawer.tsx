@@ -3865,6 +3865,10 @@ export function ChannelMutateDrawer({
                             value: 'api_key',
                             label: t('API Key'),
                           },
+                          {
+                            value: 'sdk',
+                            label: t('SDK (gcloud user credentials)'),
+                          },
                         ]}
                         onValueChange={field.onChange}
                         value={field.value}
@@ -3880,21 +3884,33 @@ export function ChannelMutateDrawer({
                             <SelectItem value='api_key'>
                               {t('API Key')}
                             </SelectItem>
+                            <SelectItem value='sdk'>
+                              {t('SDK (gcloud user credentials)')}
+                            </SelectItem>
                           </SelectGroup>
                         </SelectContent>
                       </Select>
                       <FormDescription>
-                        {field.value === 'json'
-                          ? t('JSON format supports service account JSON files')
-                          : t('API Key mode (does not support batch creation)')}
+                        {field.value === 'json' &&
+                          t('JSON format supports service account JSON files')}
+                        {field.value === 'api_key' &&
+                          t('API Key mode (does not support batch creation)')}
+                        {field.value === 'sdk' &&
+                          t(
+                            'Paste application_default_credentials.json created by gcloud auth application-default login. Set its project first with gcloud auth application-default set-quota-project PROJECT_ID.'
+                          )}
                       </FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
                 />
-                {vertexKeyType === 'json' && (
+                {vertexKeyType !== 'api_key' && (
                   <FormItem>
-                    <FormLabel>{t('Service account JSON file(s)')}</FormLabel>
+                    <FormLabel>
+                      {vertexKeyType === 'sdk'
+                        ? t('gcloud credential JSON file(s)')
+                        : t('Service account JSON file(s)')}
+                    </FormLabel>
                     <FormControl>
                       <Input
                         type='file'
@@ -3941,17 +3957,26 @@ export function ChannelMutateDrawer({
                           })
 
                           toast.success(
-                            t('Parsed {{count}} service account file(s)', {
-                              count: keys.length,
-                            })
+                            vertexKeyType === 'sdk'
+                              ? t('Parsed {{count}} credential file(s)', {
+                                  count: keys.length,
+                                })
+                              : t('Parsed {{count}} service account file(s)', {
+                                  count: keys.length,
+                                })
                           )
                         }}
                       />
                     </FormControl>
                     <FormDescription>
-                      {isBatchMode
-                        ? t('Upload multiple JSON files in batch modes')
-                        : t('Upload a single service account JSON file')}
+                      {isBatchMode &&
+                        t('Upload multiple JSON files in batch modes')}
+                      {!isBatchMode &&
+                        vertexKeyType === 'sdk' &&
+                        t('Upload a single gcloud credential JSON file')}
+                      {!isBatchMode &&
+                        vertexKeyType !== 'sdk' &&
+                        t('Upload a single service account JSON file')}
                     </FormDescription>
                     <FormMessage />
                   </FormItem>
@@ -4308,6 +4333,14 @@ export function ChannelMutateDrawer({
                     keyPlaceholder = t(
                       'Paste service account JSON keys one after another, or a JSON array'
                     )
+                  } else if (currentType === 41 && vertexKeyType === 'sdk') {
+                    keyPlaceholder = isBatchMode
+                      ? t(
+                          'Paste gcloud credential JSON files one after another, or a JSON array'
+                        )
+                      : t(
+                          'Paste the content of application_default_credentials.json'
+                        )
                   } else if (isBatchMode) {
                     keyPlaceholder = t(
                       'Enter one key per line for batch creation'
@@ -4343,6 +4376,14 @@ export function ChannelMutateDrawer({
                   ) {
                     keyDescription = t(
                       'Each service account JSON becomes one key. Paste them one after another (one per line or pretty-printed), as a JSON array, or upload the files above.'
+                    )
+                  } else if (
+                    currentType === 41 &&
+                    vertexKeyType === 'sdk' &&
+                    isBatchMode
+                  ) {
+                    keyDescription = t(
+                      'Each gcloud credential JSON becomes one key. Paste them one after another, as a JSON array, or upload the files above.'
                     )
                   } else if (isBatchMode) {
                     keyDescription = t(

@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/QuantumNous/new-api/common"
 	pluginruntime "github.com/QuantumNous/new-api/pkg/jsplugin"
 	vertexcore "github.com/QuantumNous/new-api/relay/channel/vertex"
 )
@@ -31,8 +30,8 @@ func resolveAuth(meta pluginruntime.AuthMeta, apiKey, proxy string) (map[string]
 			return map[string]any{"authHeader": entry.header, "projectId": entry.projectID}, nil
 		}
 	}
-	var credentials vertexcore.Credentials
-	if err := common.Unmarshal([]byte(apiKey), &credentials); err != nil {
+	credentials, err := vertexcore.ParseCredentials(apiKey)
+	if err != nil {
 		return nil, fmt.Errorf("decode oauth2_jwt credentials: %w", err)
 	}
 	token, err := acquireAccessToken(credentials, proxy)

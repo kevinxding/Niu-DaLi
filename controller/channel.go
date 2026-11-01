@@ -19,6 +19,7 @@ import (
 	"github.com/QuantumNous/new-api/pkg/jsplugin"
 	relaychannel "github.com/QuantumNous/new-api/relay/channel"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
+	"github.com/QuantumNous/new-api/relay/channel/vertex"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/service"
@@ -656,6 +657,24 @@ func validateChannel(channel *model.Channel, isAdd bool) error {
 			}
 		} else if !vertexRegionPattern.MatchString(channel.Other) {
 			return fmt.Errorf("部署地区必须是单个地区（如 us-central1）或 JSON 映射，例如{\"default\": \"us-central1\", \"claude-sonnet-4\": \"us-east5\"}")
+		}
+
+		// SDK keys are gcloud user credentials; reject ones that cannot refresh
+		// a token or name a project before they are saved.
+		if channel.GetOtherSettings().VertexKeyType == dto.VertexKeyTypeSDK && strings.TrimSpace(channel.Key) != "" {
+			keys, err := getVertexArrayKeys(channel.Key)
+			if err != nil {
+				return err
+			}
+			for i, key := range keys {
+				creds, err := vertex.ParseCredentials(key)
+				if err == nil {
+					err = creds.ValidateUserCredentials()
+				}
+				if err != nil {
+					return fmt.Errorf("第 %d 个 SDK 凭据无效：%w", i+1, err)
+				}
+			}
 		}
 	}
 

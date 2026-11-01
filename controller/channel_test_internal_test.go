@@ -524,6 +524,38 @@ func TestValidateChannelVertexRegion(t *testing.T) {
 	}
 }
 
+func TestValidateChannelVertexSDKCredentials(t *testing.T) {
+	userKey := `{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"1//token","quota_project_id":"p1"}`
+	noProjectKey := `{"type":"authorized_user","client_id":"id","client_secret":"secret","refresh_token":"1//token"}`
+	serviceAccountKey := `{"type":"service_account","project_id":"p2","private_key":"k","client_email":"sa@p2.iam.gserviceaccount.com"}`
+	tests := []struct {
+		name    string
+		key     string
+		wantErr string
+	}{
+		{name: "two user credentials back to back", key: userKey + "\n" + userKey},
+		{name: "no new key while editing", key: ""},
+		{name: "second credential without a project", key: userKey + "\n" + noProjectKey, wantErr: "第 2 个 SDK 凭据无效：SDK credentials need quota_project_id"},
+		{name: "service account key under SDK", key: serviceAccountKey, wantErr: `第 1 个 SDK 凭据无效：SDK credentials must be gcloud user credentials with "type": "authorized_user", got "service_account"`},
+		{name: "not JSON", key: "ya29.token", wantErr: "Vertex AI 密钥必须是 JSON 对象"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			channel := &model.Channel{Type: constant.ChannelTypeVertexAi, Other: "global", Key: test.key}
+			channel.SetOtherSettings(dto.ChannelOtherSettings{VertexKeyType: dto.VertexKeyTypeSDK})
+
+			err := validateChannel(channel, false)
+
+			if test.wantErr != "" {
+				require.ErrorContains(t, err, test.wantErr)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestGetVertexArrayKeysAcceptsArraysAndObjectSequences(t *testing.T) {
 	// The private key holds escaped newlines and braces that must not split keys.
 	keyA := `{"type":"service_account","project_id":"a","private_key":"-----BEGIN PRIVATE KEY-----\nab{c}\"d\n-----END PRIVATE KEY-----\n"}`

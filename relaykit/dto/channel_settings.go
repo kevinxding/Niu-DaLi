@@ -90,6 +90,9 @@ type VertexKeyType string
 const (
 	VertexKeyTypeJSON   VertexKeyType = "json"
 	VertexKeyTypeAPIKey VertexKeyType = "api_key"
+	// VertexKeyTypeSDK holds gcloud user credentials (authorized_user JSON from
+	// `gcloud auth application-default login`), refreshed with their refresh token.
+	VertexKeyTypeSDK VertexKeyType = "sdk"
 )
 
 type AwsKeyType string
@@ -101,7 +104,7 @@ const (
 
 type ChannelOtherSettings struct {
 	AzureResponsesVersion                 string                `json:"azure_responses_version,omitempty"`
-	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json" or "api_key"
+	VertexKeyType                         VertexKeyType         `json:"vertex_key_type,omitempty"` // "json", "api_key" or "sdk"
 	OpenRouterEnterprise                  *bool                 `json:"openrouter_enterprise,omitempty"`
 	ClaudeBetaQuery                       bool                  `json:"claude_beta_query,omitempty"`          // Claude 渠道是否强制追加 ?beta=true
 	AllowServiceTier                      bool                  `json:"allow_service_tier,omitempty"`         // 是否允许 service_tier 透传（默认过滤以避免额外计费）

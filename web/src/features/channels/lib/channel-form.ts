@@ -213,26 +213,47 @@ function splitJsonObjectSequence(text: string): string[] | null {
 }
 
 /**
- * Vertex AI service account keys: a JSON array of objects, or one or more JSON
+ * Vertex AI credential JSON: a JSON array of objects, or one or more JSON
  * objects pasted one after another. Mirrors getVertexArrayKeys on the server.
+ * Returns the objects (none for an empty value), or null when invalid.
  */
-function isVertexJsonKey(value: string | undefined): boolean {
+function parseVertexJsonKeys(
+  value: string | undefined
+): Record<string, unknown>[] | null {
   const trimmed = value?.trim()
-  if (!trimmed) return true
+  if (!trimmed) return []
   try {
     if (trimmed.startsWith('[')) {
       const parsed: unknown = JSON.parse(trimmed)
       return Array.isArray(parsed) && parsed.every(isJsonObjectValue)
+        ? parsed
+        : null
     }
-    const objects = splitJsonObjectSequence(trimmed)
-    return (
-      objects !== null &&
-      objects.length > 0 &&
-      objects.every((source) => isJsonObjectValue(JSON.parse(source)))
-    )
+    const sources = splitJsonObjectSequence(trimmed)
+    if (sources === null || sources.length === 0) return null
+    const objects: unknown[] = sources.map((source) => JSON.parse(source))
+    return objects.every(isJsonObjectValue) ? objects : null
   } catch {
-    return false
+    return null
   }
+}
+
+function hasText(value: unknown): boolean {
+  return typeof value === 'string' && value.trim() !== ''
+}
+
+/**
+ * gcloud user credentials (application_default_credentials.json) for the SDK
+ * key format. Mirrors Credentials.ValidateUserCredentials on the server.
+ */
+function isVertexSdkCredential(credential: Record<string, unknown>): boolean {
+  return (
+    credential.type === 'authorized_user' &&
+    hasText(credential.client_id) &&
+    hasText(credential.client_secret) &&
+    hasText(credential.refresh_token) &&
+    (hasText(credential.quota_project_id) || hasText(credential.project_id))
+  )
 }
 
 function addRequiredIssue(
@@ -320,7 +341,7 @@ export const channelFormSchema = z
     system_prompt_override: z.boolean().optional(),
     // Type-specific settings (stored in settings JSON)
     is_enterprise_account: z.boolean().optional(), // OpenRouter specific
-    vertex_key_type: z.enum(['json', 'api_key']).optional(), // Vertex AI specific
+    vertex_key_type: z.enum(['json', 'api_key', 'sdk']).optional(), // Vertex AI specific
     aws_key_type: z.enum(['ak_sk', 'api_key']).optional(), // AWS specific
     azure_responses_version: z.string().optional(), // Azure specific
     // Field passthrough controls (stored in settings JSON)
@@ -425,13 +446,28 @@ export const channelFormSchema = z
       data.type === 41 &&
       data.vertex_key_type === 'json' &&
       data.key?.trim() &&
-      !isVertexJsonKey(data.key)
+      parseVertexJsonKeys(data.key) === null
     ) {
       addRequiredIssue(
         ctx,
         'key',
         'Vertex AI service account key must be valid JSON'
       )
+    }
+
+    if (
+      data.type === 41 &&
+      data.vertex_key_type === 'sdk' &&
+      data.key?.trim()
+    ) {
+      const credentials = parseVertexJsonKeys(data.key)
+      if (credentials === null || !credentials.every(isVertexSdkCredential)) {
+        addRequiredIssue(
+          ctx,
+          'key',
+          'SDK credentials must be gcloud user credential JSON with type authorized_user, refresh_token and quota_project_id'
+        )
+      }
     }
 
     if (
@@ -583,7 +619,7 @@ export function transformChannelToFormDefaults(
   }
 
   // Parse type-specific settings from settings field
-  let vertexKeyType: 'json' | 'api_key' = 'json'
+  let vertexKeyType: 'json' | 'api_key' | 'sdk' = 'json'
   let azureResponsesVersion = ''
   let isEnterpriseAccount = false
   let awsKeyType: 'ak_sk' | 'api_key' = 'ak_sk'

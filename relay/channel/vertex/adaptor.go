@@ -132,11 +132,14 @@ func (a *Adaptor) Init(info *relaycommon.RelayInfo) {
 func (a *Adaptor) getRequestUrl(info *relaycommon.RelayInfo, modelName, suffix string) (string, error) {
 	region := GetModelRegion(info.ApiVersion, info.OriginModelName)
 	if info.ChannelOtherSettings.VertexKeyType != dto.VertexKeyTypeAPIKey {
-		adc := &Credentials{}
-		if err := common.Unmarshal([]byte(info.ApiKey), adc); err != nil {
-			return "", fmt.Errorf("failed to decode credentials file: %w", err)
+		adc, err := ParseCredentials(info.ApiKey)
+		if err != nil {
+			return "", err
 		}
-		a.AccountCredentials = *adc
+		if adc.ProjectID == "" {
+			return "", errors.New("credentials have no project_id or quota_project_id")
+		}
+		a.AccountCredentials = adc
 
 		if a.RequestMode == RequestModeGemini {
 			return BuildGoogleModelURL(info.ChannelBaseUrl, DefaultAPIVersion, adc.ProjectID, region, modelName, suffix), nil
