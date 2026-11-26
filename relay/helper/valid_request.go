@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	"github.com/samber/lo"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 func GetAndValidateRequest(c *gin.Context, format types.RelayFormat) (request dto.Request, err error) {
@@ -415,6 +417,11 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		if len(textRequest.Messages) == 0 && textRequest.Prefix == nil && textRequest.Suffix == nil {
 			return nil, errors.New("field messages is required")
 		}
+		if strings.EqualFold(textRequest.Model, "kimi-k3.1-pro-highspeed") {
+			if err := validateKimiHighspeedSampling(textRequest); err != nil {
+				return nil, err
+			}
+		}
 	case relayconstant.RelayModeEmbeddings:
 	case relayconstant.RelayModeModerations:
 		if textRequest.Input == nil || textRequest.Input == "" {
@@ -426,6 +433,30 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		}
 	}
 	return textRequest, nil
+}
+
+func validateKimiHighspeedSampling(request *dto.GeneralOpenAIRequest) error {
+	temperature := 1.0
+	if request.ReasoningEffort == "none" || gjson.GetBytes(request.THINKING, "type").String() == "disabled" {
+		temperature = 0.6
+	}
+	const topP = 0.95
+	var field string
+	var allowed float64
+	switch {
+	case request.Temperature != nil && *request.Temperature != temperature:
+		field, allowed = "temperature", temperature
+	case request.TopP != nil && *request.TopP != topP:
+		field, allowed = "top_p", topP
+	default:
+		return nil
+	}
+	return types.WithOpenAIError(types.OpenAIError{
+		Message: fmt.Sprintf("invalid %s: only %g is allowed for this model", field, allowed),
+		Type:    "invalid_request_error",
+		Param:   field,
+		Code:    string(types.ErrorCodeInvalidRequest),
+	}, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
 }
 
 func GetAndValidateGeminiRequest(c *gin.Context) (*dto.GeminiChatRequest, error) {
