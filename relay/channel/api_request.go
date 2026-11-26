@@ -550,7 +550,8 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 	if info.IsStream {
 		helper.SetEventStreamHeaders(c)
 		// Kimi cache-write headers must be available before the first SSE flush.
-		waitForCacheHeaders := info.RelayMode == constant.RelayModeChatCompletions && dto.IsKimiK31Model(info.UpstreamModelName)
+		waitForCacheHeaders := dto.IsKimiK31Model(info.UpstreamModelName) &&
+			(info.RelayMode == constant.RelayModeChatCompletions || info.RelayFormat == types.RelayFormatClaude)
 		generalSettings := operation_setting.GetGeneralSetting()
 		if generalSettings.PingIntervalEnabled && !info.DisablePing && !waitForCacheHeaders {
 			pingInterval := time.Duration(generalSettings.PingIntervalSeconds) * time.Second

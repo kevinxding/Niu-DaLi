@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
@@ -18,6 +19,8 @@ import (
 	"github.com/QuantumNous/new-api/setting/model_setting"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 func stopReasonClaude2OpenAI(reason string) string {
@@ -291,6 +294,57 @@ func HandleStreamFinalResponse(c *gin.Context, info *relaycommon.RelayInfo, clau
 	}
 }
 
+func kimiMessagesCacheWriteCounts(info *relaycommon.RelayInfo, headers http.Header) (cache5m, cache1h uint64) {
+	if info.RelayFormat != types.RelayFormatClaude || info.ChannelMeta == nil || info.ChannelType != constant.ChannelTypeSub2API ||
+		!dto.IsKimiK31Model(info.OriginModelName) {
+		return 0, 0
+	}
+	count5m := headers.Values(common.KimiCacheWriteTokens5mHeader)
+	count1h := headers.Values(common.KimiCacheWriteTokens1hHeader)
+	if !common.RelayProtocolHeader(common.KimiCacheWriteTokens5mHeader, count5m) ||
+		!common.RelayProtocolHeader(common.KimiCacheWriteTokens1hHeader, count1h) {
+		return 0, 0
+	}
+	cache5m, _ = strconv.ParseUint(count5m[0], 10, 31)
+	cache1h, _ = strconv.ParseUint(count1h[0], 10, 31)
+	return cache5m, cache1h
+}
+
+// Fill an omitted breakdown only when the response headers account for every
+// reported cache-write token and agree with any tier already in the body.
+func fillKimiMessagesCacheBreakdown(data, usagePath string, cache5m, cache1h uint64) string {
+	if cache5m == 0 && cache1h == 0 {
+		return data
+	}
+	usage := gjson.Get(data, usagePath)
+	total := usage.Get("cache_creation_input_tokens")
+	count, err := strconv.ParseUint(total.Raw, 10, 31)
+	if total.Type != gjson.Number || err != nil || count != cache5m+cache1h {
+		return data
+	}
+
+	const key5m = "cache_creation.ephemeral_5m_input_tokens"
+	const key1h = "cache_creation.ephemeral_1h_input_tokens"
+	body5m, body1h := usage.Get(key5m), usage.Get(key1h)
+	if (body5m.Exists() && body5m.Raw != strconv.FormatUint(cache5m, 10)) ||
+		(body1h.Exists() && body1h.Raw != strconv.FormatUint(cache1h, 10)) ||
+		(body5m.Exists() && body1h.Exists()) {
+		return data
+	}
+	if split := usage.Get("cache_creation"); split.Exists() && split.Type != gjson.Null && !split.IsObject() {
+		return data
+	}
+	updated, err := sjson.Set(data, usagePath+"."+key5m, cache5m)
+	if err != nil {
+		return data
+	}
+	updated, err = sjson.Set(updated, usagePath+"."+key1h, cache1h)
+	if err != nil {
+		return data
+	}
+	return updated
+}
+
 func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayInfo) (*dto.Usage, *types.NewAPIError) {
 	claudeInfo := &ClaudeResponseInfo{
 		ResponseId:   helper.GetResponseID(c),
@@ -299,8 +353,17 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 		ResponseText: strings.Builder{},
 		Usage:        &dto.Usage{},
 	}
+	cache5m, cache1h := kimiMessagesCacheWriteCounts(info, resp.Header)
 	var err *types.NewAPIError
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
+		if cache5m != 0 || cache1h != 0 {
+			switch gjson.Get(data, "type").String() {
+			case "message_start":
+				data = fillKimiMessagesCacheBreakdown(data, "message.usage", cache5m, cache1h)
+			case "message_delta":
+				data = fillKimiMessagesCacheBreakdown(data, "usage", cache5m, cache1h)
+			}
+		}
 		err = HandleStreamResponseData(c, info, claudeInfo, data)
 		if err != nil {
 			sr.Stop(err)
@@ -414,6 +477,10 @@ func ClaudeHandler(c *gin.Context, resp *http.Response, info *relaycommon.RelayI
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, types.NewError(err, types.ErrorCodeBadResponseBody)
+	}
+	cache5m, cache1h := kimiMessagesCacheWriteCounts(info, resp.Header)
+	if cache5m != 0 || cache1h != 0 {
+		responseBody = []byte(fillKimiMessagesCacheBreakdown(string(responseBody), "usage", cache5m, cache1h))
 	}
 	logger.LogDebug(c, "responseBody: %s", responseBody)
 	handleErr := HandleClaudeResponseData(c, info, claudeInfo, resp, responseBody)

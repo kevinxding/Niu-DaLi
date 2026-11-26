@@ -64,6 +64,9 @@ const (
 	// ContextKeyFileSourcesToCleanup stores file sources that need cleanup when request ends
 	ContextKeyFileSourcesToCleanup ContextKey = "file_sources_to_cleanup"
 
+	// ContextKeyPublicRequestValidationError marks a gateway-generated error with a safe field message.
+	ContextKeyPublicRequestValidationError ContextKey = "public_request_validation_error"
+
 	// ContextKeyAdminRejectReason stores an admin-only reject/block reason extracted from upstream responses.
 	// It is not returned to end users, but can be persisted into consume/error logs for debugging.
 	ContextKeyAdminRejectReason ContextKey = "admin_reject_reason"

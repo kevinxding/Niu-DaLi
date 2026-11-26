@@ -230,6 +230,7 @@ type ClaudeRequest struct {
 	System       any             `json:"system,omitempty"`
 	Messages     []ClaudeMessage `json:"messages,omitempty"`
 	CacheControl json.RawMessage `json:"cache_control,omitempty"`
+	TTL          *string         `json:"ttl,omitempty"`
 	// InferenceGeo controls Claude data residency region.
 	// This field is filtered by default and can be enabled via channel setting allow_inference_geo.
 	InferenceGeo      string          `json:"inference_geo,omitempty"`

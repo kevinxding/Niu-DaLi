@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/logger"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relaykit/dto"
@@ -358,6 +359,11 @@ func GetAndValidateClaudeRequest(c *gin.Context) (textRequest *dto.ClaudeRequest
 	if ExceedsMaxTokensLimit(textRequest.MaxTokens, textRequest.MaxTokensToSample) {
 		return nil, errors.New("max_tokens is invalid")
 	}
+	if !dto.IsKimiK31Model(textRequest.Model) {
+		textRequest.TTL = nil
+	} else if textRequest.TTL != nil && *textRequest.TTL != "5m" && *textRequest.TTL != "1h" {
+		return nil, kimiRequestFieldError(c, "ttl", "ttl must be 5m or 1h")
+	}
 	if err = validateClaudeRequest(textRequest); err != nil {
 		return nil, err
 	}
@@ -417,8 +423,8 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 		if len(textRequest.Messages) == 0 && textRequest.Prefix == nil && textRequest.Suffix == nil {
 			return nil, errors.New("field messages is required")
 		}
-		if strings.EqualFold(textRequest.Model, "kimi-k3.1-pro-highspeed") {
-			if err := validateKimiHighspeedSampling(textRequest); err != nil {
+		if dto.IsKimiK31Model(textRequest.Model) {
+			if err := validateKimiChatRequest(c, textRequest); err != nil {
 				return nil, err
 			}
 		}
@@ -435,24 +441,59 @@ func GetAndValidateTextRequest(c *gin.Context, relayMode int) (*dto.GeneralOpenA
 	return textRequest, nil
 }
 
-func validateKimiHighspeedSampling(request *dto.GeneralOpenAIRequest) error {
-	temperature := 1.0
-	if request.ReasoningEffort == "none" || gjson.GetBytes(request.THINKING, "type").String() == "disabled" {
-		temperature = 0.6
+func validateKimiChatRequest(c *gin.Context, request *dto.GeneralOpenAIRequest) error {
+	thinking := gjson.GetBytes(request.THINKING, "type").String()
+	thinkingDisabled := request.ReasoningEffort == "none" || thinking == "disabled"
+	if strings.EqualFold(request.Model, "kimi-k3.1-pro-highspeed") {
+		temperature := 1.0
+		if thinkingDisabled {
+			temperature = 0.6
+		}
+		if request.Temperature != nil && *request.Temperature != temperature {
+			return kimiRequestFieldError(c, "temperature", fmt.Sprintf("temperature must be %g in this thinking mode", temperature))
+		}
+		if request.TopP != nil && *request.TopP != 0.95 {
+			return kimiRequestFieldError(c, "top_p", "top_p must be 0.95")
+		}
 	}
-	const topP = 0.95
-	var field string
-	var allowed float64
-	switch {
-	case request.Temperature != nil && *request.Temperature != temperature:
-		field, allowed = "temperature", temperature
-	case request.TopP != nil && *request.TopP != topP:
-		field, allowed = "top_p", topP
-	default:
-		return nil
+
+	if mode := gjson.GetBytes(request.PromptCacheOptions, "mode"); mode.Exists() && mode.String() != "implicit" {
+		return kimiRequestFieldError(c, "prompt_cache_options.mode", "prompt_cache_options.mode must be implicit")
 	}
+	if ttl := gjson.GetBytes(request.PromptCacheOptions, "ttl"); ttl.Exists() && ttl.String() != "5m" && ttl.String() != "1h" {
+		return kimiRequestFieldError(c, "prompt_cache_options.ttl", "prompt_cache_options.ttl must be 5m or 1h")
+	}
+	thinkingRequested := thinking == "enabled" || thinking == "adaptive" || (request.ReasoningEffort != "" && !thinkingDisabled)
+	if tool, ok := request.ToolChoice.(map[string]any); ok && tool["type"] == "function" && thinkingRequested && !thinkingDisabled {
+		return kimiRequestFieldError(c, "tool_choice", "tool_choice cannot name a function when thinking is enabled")
+	}
+	for i := range request.Messages {
+		message := &request.Messages[i]
+		if message.Role == "developer" {
+			field := fmt.Sprintf("messages[%d].role", i)
+			return kimiRequestFieldError(c, field, "the developer role is unsupported; use system instead")
+		}
+		if message.IsStringContent() {
+			continue
+		}
+		for _, content := range message.ParseContent() {
+			if content.Type != dto.ContentTypeImageURL {
+				continue
+			}
+			image := content.GetImageMedia()
+			if image == nil || !(strings.HasPrefix(image.Url, "data:") || strings.HasPrefix(image.Url, "http://") || strings.HasPrefix(image.Url, "https://")) {
+				field := fmt.Sprintf("messages[%d].content", i)
+				return kimiRequestFieldError(c, field, "image_url must be an HTTP(S) URL or a data URL")
+			}
+		}
+	}
+	return nil
+}
+
+func kimiRequestFieldError(c *gin.Context, field, message string) error {
+	common.SetContextKey(c, constant.ContextKeyPublicRequestValidationError, true)
 	return types.WithOpenAIError(types.OpenAIError{
-		Message: fmt.Sprintf("invalid %s: only %g is allowed for this model", field, allowed),
+		Message: message,
 		Type:    "invalid_request_error",
 		Param:   field,
 		Code:    string(types.ErrorCodeInvalidRequest),

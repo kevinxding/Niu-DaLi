@@ -203,6 +203,8 @@ func (w *relayPrivacyWriter) writeJSON(body []byte) error {
 		if w.Status() < 400 {
 			w.ResponseWriter.WriteHeader(http.StatusBadGateway)
 		}
+	case w.Status() == http.StatusBadRequest && common.GetContextKeyBool(w.ctx, constant.ContextKeyPublicRequestValidationError):
+		body = common.PublicRelayJSON(body, w.ctx.GetString(common.RequestIdKey), false)
 	case passthrough:
 		// Hand the upstream document back with gateway provenance removed. The
 		// upstream status and error text are already on the wire untouched.

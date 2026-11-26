@@ -19,6 +19,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
@@ -375,9 +376,10 @@ func TestKimiErrorsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
 
 	for _, tc := range []struct {
 		model  string
+		status int
 		stream bool
 	}{
-		{model: "kimi-k3.1-pro-highspeed"},
+		{model: "kimi-k3.1-pro-highspeed", status: http.StatusBadRequest},
 		{model: "kimi-k3.1-pro", stream: true},
 	} {
 		t.Run(tc.model, func(t *testing.T) {
@@ -391,7 +393,7 @@ func TestKimiErrorsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
 					c.Writer.Flush()
 					return
 				}
-				c.Data(http.StatusTooManyRequests, "application/json", []byte(failure))
+				c.Data(tc.status, "application/json", []byte(failure))
 			})
 			request := httptest.NewRequest(http.MethodPost, "/test", nil)
 			request.Header.Set(common.RelayErrorPassthroughHeader, "true")
@@ -403,7 +405,7 @@ func TestKimiErrorsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
 				assert.Equal(t, http.StatusOK, recorder.Code)
 				assert.Contains(t, recorder.Body.String(), "event: error")
 			} else {
-				assert.Equal(t, http.StatusTooManyRequests, recorder.Code)
+				assert.Equal(t, tc.status, recorder.Code)
 			}
 			assert.Contains(t, recorder.Body.String(), "rate_limit_exceeded")
 			assert.Contains(t, recorder.Body.String(), "local-request")
@@ -413,29 +415,47 @@ func TestKimiErrorsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
 	}
 }
 
-func TestKimiHighspeedSamplingValidation(t *testing.T) {
+func TestKimiChatRequestValidation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	const highspeed = "kimi-k3.1-pro-highspeed"
 	for _, tc := range []struct {
 		name       string
 		model      string
 		parameters string
+		messages   string
+		field      string
 		valid      bool
 	}{
 		{name: "omitted", model: highspeed, valid: true},
 		{name: "default thinking accepts 1", model: highspeed, parameters: `,"temperature":1,"top_p":0.95`, valid: true},
-		{name: "default thinking rejects 0.7", model: highspeed, parameters: `,"temperature":0.7`},
-		{name: "thinking enabled rejects 0.6", model: highspeed, parameters: `,"thinking":{"type":"enabled"},"temperature":0.6`},
+		{name: "default thinking rejects 0.7", model: highspeed, parameters: `,"temperature":0.7`, field: "temperature"},
+		{name: "thinking enabled rejects 0.6", model: highspeed, parameters: `,"thinking":{"type":"enabled"},"temperature":0.6`, field: "temperature"},
 		{name: "thinking disabled accepts 0.6", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"temperature":0.6,"top_p":0.95`, valid: true},
-		{name: "thinking disabled rejects 1", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"temperature":1`},
+		{name: "thinking disabled rejects 1", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"temperature":1`, field: "temperature"},
 		{name: "effort none selects non-thinking sampling", model: highspeed, parameters: `,"thinking":{"type":"enabled"},"reasoning_effort":"none","temperature":0.6`, valid: true},
-		{name: "temperature zero in a streaming request", model: highspeed, parameters: `,"stream":true,"thinking":{"type":"disabled"},"temperature":0`},
-		{name: "top_p 0.5", model: highspeed, parameters: `,"top_p":0.5`},
-		{name: "thinking disabled rejects top_p 1", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"top_p":1`},
+		{name: "temperature zero in a streaming request", model: highspeed, parameters: `,"stream":true,"thinking":{"type":"disabled"},"temperature":0`, field: "temperature"},
+		{name: "top_p 0.5", model: highspeed, parameters: `,"top_p":0.5`, field: "top_p"},
+		{name: "thinking disabled rejects top_p 1", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"top_p":1`, field: "top_p"},
 		{name: "standard model keeps provider validation", model: "kimi-k3.1-pro", parameters: `,"temperature":0.7,"top_p":0.5`, valid: true},
+		{name: "named tool with thinking", model: highspeed, parameters: `,"thinking":{"type":"enabled"},"tool_choice":{"type":"function","function":{"name":"lookup"}}`, field: "tool_choice"},
+		{name: "named tool with effort", model: "kimi-k3.1-pro", parameters: `,"reasoning_effort":"high","tool_choice":{"type":"function","function":{"name":"lookup"}}`, field: "tool_choice"},
+		{name: "named tool with thinking off", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"tool_choice":{"type":"function","function":{"name":"lookup"}}`, valid: true},
+		{name: "automatic tool with high effort preserved", model: highspeed, parameters: `,"thinking":{"type":"enabled","effort":"high"},"tool_choice":"auto"`, valid: true},
+		{name: "explicit cache mode", model: "kimi-k3.1-pro", parameters: `,"prompt_cache_options":{"mode":"explicit"}`, field: "prompt_cache_options.mode"},
+		{name: "implicit cache mode", model: highspeed, parameters: `,"prompt_cache_options":{"mode":"implicit","ttl":"1h"}`, valid: true},
+		{name: "unsupported cache ttl", model: highspeed, parameters: `,"prompt_cache_options":{"ttl":"2h"}`, field: "prompt_cache_options.ttl"},
+		{name: "developer role", model: highspeed, messages: `[{"role":"developer","content":"hi"}]`, field: "messages[0].role"},
+		{name: "bare base64", model: highspeed, messages: `[{"role":"user","content":[{"type":"image_url","image_url":{"url":"aGVsbG8="}}]}]`, field: "messages[0].content"},
+		{name: "image data URL", model: "kimi-k3.1-pro", messages: `[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,aGVsbG8="}}]}]`, valid: true},
+		{name: "other model developer role", model: "gpt-4o", messages: `[{"role":"developer","content":"hi"}]`, valid: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			const path = "/v1/chat/completions"
+			messages := tc.messages
+			if messages == "" {
+				messages = `[{"role":"user","content":"hi"}]`
+			}
+			body := fmt.Sprintf(`{"model":%q,"messages":%s%s}`, tc.model, messages, tc.parameters)
 			engine := gin.New()
 			engine.POST(path, middleware.RouteTag("relay"), func(c *gin.Context) {
 				defer common.CleanupBodyStorage(c)
@@ -450,10 +470,9 @@ func TestKimiHighspeedSamplingValidation(t *testing.T) {
 				require.NoError(t, err)
 				forwarded, err := common.Marshal(parsed)
 				require.NoError(t, err)
-				assert.JSONEq(t, fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]%s}`, tc.model, tc.parameters), string(forwarded))
+				assert.JSONEq(t, body, string(forwarded))
 				c.Status(http.StatusNoContent)
 			})
-			body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]%s}`, tc.model, tc.parameters)
 			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 			request.Header.Set("Content-Type", "application/json")
 			request.Header.Set(common.RelayErrorPassthroughHeader, "true")
@@ -472,7 +491,114 @@ func TestKimiHighspeedSamplingValidation(t *testing.T) {
 			require.NotNil(t, response.Error)
 			assert.Equal(t, "invalid_request_error", response.Error.Type)
 			assert.Equal(t, "invalid_request", response.Error.Code)
-			assert.Equal(t, common.PublicRelayFailureMessage("gateway-request"), response.Error.Message)
+			assert.Equal(t, tc.field, response.Error.Param)
+			assert.NotEqual(t, common.PublicRelayFailureMessage("gateway-request"), response.Error.Message)
+			assert.NotContains(t, response.Error.Message, "aGVsbG8=")
+		})
+	}
+}
+
+func TestKimiMessagesCacheTTLAndUsage(t *testing.T) {
+	service.InitHttpClient()
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 10
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+	const model = "kimi-k3.1-pro"
+	for _, tc := range []struct {
+		name         string
+		stream       bool
+		cacheControl string
+		wantTTL      string
+		count        string
+		wantSplit    bool
+	}{
+		{name: "1h JSON", wantTTL: "1h", count: "2048", wantSplit: true},
+		{name: "1h SSE", stream: true, wantTTL: "1h", count: "2048", wantSplit: true},
+		{name: "conflicting upstream counts", wantTTL: "1h", count: "2047"},
+		{name: "explicit cache control wins", cacheControl: `,"cache_control":{"type":"ephemeral","ttl":"5m"}`, wantTTL: "5m", count: "2048", wantSplit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const usage = `"usage":{"input_tokens":12,"output_tokens":1,"cache_creation_input_tokens":2048,"cache_read_input_tokens":0}`
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/v1/messages", r.URL.Path)
+				var request struct {
+					CacheControl struct {
+						Type string `json:"type"`
+						TTL  string `json:"ttl"`
+					} `json:"cache_control"`
+					TTL *string `json:"ttl"`
+				}
+				if assert.NoError(t, common.DecodeJson(r.Body, &request)) {
+					assert.Equal(t, tc.wantTTL, request.CacheControl.TTL)
+					assert.Equal(t, "ephemeral", request.CacheControl.Type)
+					assert.Nil(t, request.TTL)
+				}
+				w.Header().Set("X-Provider", "private-provider")
+				w.Header().Set(common.KimiCacheWriteTokens5mHeader, "0")
+				w.Header().Set(common.KimiCacheWriteTokens1hHeader, tc.count)
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_test\",\"model\":%q,%s}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},%s}\n\nevent: message_stop\ndata: {\"type\":\"message_stop\"}\n\n", model, usage, usage)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"type":"message","model":%q,"content":[{"type":"text","text":"OK"}],%s}`, model, usage)
+			}))
+			t.Cleanup(upstream.Close)
+
+			engine := privacyRouter(func(c *gin.Context) {
+				defer common.CleanupBodyStorage(c)
+				req, err := helper.GetAndValidateClaudeRequest(c)
+				require.NoError(t, err)
+				info := &relaycommon.RelayInfo{
+					ChannelMeta: &relaycommon.ChannelMeta{
+						ChannelType:       constant.ChannelTypeSub2API,
+						ChannelBaseUrl:    upstream.URL,
+						UpstreamModelName: req.Model,
+					},
+					OriginModelName: req.Model,
+					RequestURLPath:  "/v1/messages",
+					RelayFormat:     types.RelayFormatClaude,
+					IsStream:        tc.stream,
+				}
+				adaptor := &sub2api.Adaptor{}
+				adaptor.Init(info)
+				converted, err := adaptor.ConvertClaudeRequest(c, info, req)
+				require.NoError(t, err)
+				body, err := common.Marshal(converted)
+				require.NoError(t, err)
+				response, err := adaptor.DoRequest(c, info, bytes.NewReader(body))
+				require.NoError(t, err)
+				actual, relayErr := adaptor.DoResponse(c, response.(*http.Response), info)
+				require.Nil(t, relayErr)
+				reported := actual.(*dto.Usage)
+				if tc.wantSplit {
+					assert.Equal(t, 2048, reported.ClaudeCacheCreation1hTokens)
+				} else {
+					assert.Zero(t, reported.ClaudeCacheCreation1hTokens)
+				}
+				assert.Equal(t, 2048, reported.PromptTokensDetails.CachedCreationTokens)
+			})
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(fmt.Sprintf(
+				`{"model":%q,"messages":[{"role":"user","content":"hi"}],"max_tokens":32,"ttl":"1h","stream":%t%s}`, model, tc.stream, tc.cacheControl,
+			)))
+			request.Header.Set("Content-Type", "application/json")
+			engine.ServeHTTP(recorder, request)
+			response := recorder.Result()
+			defer response.Body.Close()
+			require.Equal(t, http.StatusOK, response.StatusCode)
+			assert.Equal(t, "0", response.Header.Get(common.KimiCacheWriteTokens5mHeader))
+			assert.Equal(t, tc.count, response.Header.Get(common.KimiCacheWriteTokens1hHeader))
+			assert.Empty(t, response.Header.Get("X-Provider"))
+			if tc.wantSplit {
+				assert.Contains(t, recorder.Body.String(), `"ephemeral_1h_input_tokens":2048`)
+			} else {
+				assert.NotContains(t, recorder.Body.String(), `"ephemeral_1h_input_tokens"`)
+			}
+			if tc.stream {
+				assert.Contains(t, recorder.Body.String(), "event: message_stop")
+			}
 		})
 	}
 }
