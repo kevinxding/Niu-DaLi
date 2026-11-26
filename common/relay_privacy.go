@@ -3,6 +3,7 @@ package common
 import (
 	"bytes"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -254,11 +255,24 @@ func PublicRelaySSE(frame []byte, requestID string, redactErrors bool) []byte {
 	return out.Bytes()
 }
 
+const (
+	KimiCacheWriteTokens5mHeader = "Msh-Usage-Cache-Write-Tokens-5m"
+	KimiCacheWriteTokens1hHeader = "Msh-Usage-Cache-Write-Tokens-1h"
+)
+
 // RelayProtocolHeader is an allowlist, so new infrastructure fingerprint headers
 // cannot accidentally become public. Gateway-owned CORS/security/request headers
 // are applied separately; an upstream must not overwrite them.
-func RelayProtocolHeader(name string) bool {
+func RelayProtocolHeader(name string, values []string) bool {
 	switch http.CanonicalHeaderKey(name) {
+	case KimiCacheWriteTokens5mHeader, KimiCacheWriteTokens1hHeader:
+		if len(values) != 1 {
+			return false
+		}
+		// A token count is public usage data. Reject duplicate values and anything
+		// other than a canonical nonnegative int32 count.
+		count, err := strconv.ParseUint(values[0], 10, 31)
+		return err == nil && strconv.FormatUint(count, 10) == values[0]
 	case "Content-Type", "Content-Disposition", "Content-Encoding", "Cache-Control", "Expires", "Last-Modified", "Etag", "Retry-After", "Content-Range", "Accept-Ranges", "X-Accel-Buffering", "X-Reasoning-Included", "X-Codex-Turn-State":
 		return true
 	}

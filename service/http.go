@@ -38,7 +38,7 @@ func ShouldCopyUpstreamHeader(c *gin.Context, k string, v []string) bool {
 		}
 		return false
 	}
-	return len(v) > 0 && common.RelayProtocolHeader(k)
+	return len(v) > 0 && common.RelayProtocolHeader(k, v)
 }
 
 func IOCopyBytesGracefully(c *gin.Context, src *http.Response, data []byte) {

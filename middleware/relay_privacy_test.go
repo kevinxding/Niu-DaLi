@@ -1,6 +1,7 @@
 package middleware_test
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"net/http"
@@ -9,11 +10,15 @@ import (
 	"testing"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/relay/channel/minimax"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
+	"github.com/QuantumNous/new-api/relay/channel/sub2api"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
+	"github.com/QuantumNous/new-api/relay/helper"
+	"github.com/QuantumNous/new-api/relaykit/types"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/setting/system_setting"
 	"github.com/gin-gonic/gin"
@@ -246,6 +251,164 @@ func TestRelayPrivacyAcrossProtocols(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestKimiCacheUsageThroughRelayPrivacy(t *testing.T) {
+	service.InitHttpClient()
+	previousTimeout := constant.StreamingTimeout
+	constant.StreamingTimeout = 10
+	t.Cleanup(func() { constant.StreamingTimeout = previousTimeout })
+
+	for _, tc := range []struct {
+		name      string
+		model     string
+		stream    bool
+		malformed bool
+	}{
+		{name: "highspeed JSON", model: "kimi-k3.1-pro-highspeed"},
+		{name: "pro SSE", model: "kimi-k3.1-pro", stream: true},
+		{name: "invalid values JSON", model: "kimi-k3.1-pro-highspeed", malformed: true},
+		{name: "invalid values SSE", model: "kimi-k3.1-pro", stream: true, malformed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const cacheOptions = `{"mode":"implicit","ttl":"1h"}`
+			const usage = `"usage":{"prompt_tokens":2300,"completion_tokens":1,"total_tokens":2301,"cache_creation":{"ephemeral_5m_input_tokens":0,"ephemeral_1h_input_tokens":2048}}`
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				assert.Equal(t, "/v1/chat/completions", r.URL.Path)
+				var request struct {
+					CacheOptions common.RawMessage `json:"prompt_cache_options"`
+				}
+				if assert.NoError(t, common.DecodeJson(r.Body, &request)) {
+					assert.JSONEq(t, cacheOptions, string(request.CacheOptions))
+				}
+
+				w.Header().Set("Server", "private-provider")
+				w.Header().Set("Via", "private-proxy")
+				w.Header().Set("X-Request-Id", "private-request")
+				w.Header().Set("X-Client-Request-Id", "private-client-request")
+				w.Header().Set("Set-Cookie", "private-cookie")
+				w.Header().Set("Msh-Usage-Account", "private-account")
+				w.Header().Set(common.KimiCacheWriteTokens5mHeader, "0")
+				w.Header().Set(common.KimiCacheWriteTokens1hHeader, "2048")
+				if tc.malformed {
+					w.Header().Set(common.KimiCacheWriteTokens5mHeader, "https://private.invalid")
+					w.Header().Add(common.KimiCacheWriteTokens1hHeader, "2049")
+				}
+
+				if tc.stream {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = fmt.Fprintf(w, "data: {\"id\":\"completion-id\",\"model\":%q,\"provider\":\"private-provider\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"OK\"},\"finish_reason\":\"stop\"}]}\n\ndata: {\"id\":\"completion-id\",\"model\":%q,\"choices\":[],%s}\n\ndata: [DONE]\n\n", tc.model, tc.model, usage)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"id":"completion-id","model":%q,"provider":"private-provider","choices":[{"index":0,"message":{"role":"assistant","content":"OK"},"finish_reason":"stop"}],%s}`, tc.model, usage)
+			}))
+			t.Cleanup(upstream.Close)
+
+			engine := privacyRouter(func(c *gin.Context) {
+				defer common.CleanupBodyStorage(c)
+				const mode = relayconstant.RelayModeChatCompletions
+				req, err := helper.GetAndValidateTextRequest(c, mode)
+				require.NoError(t, err)
+				info := &relaycommon.RelayInfo{
+					ChannelMeta: &relaycommon.ChannelMeta{
+						ChannelType:       constant.ChannelTypeSub2API,
+						ChannelBaseUrl:    upstream.URL,
+						UpstreamModelName: req.Model,
+					},
+					OriginModelName:    req.Model,
+					RequestURLPath:     "/v1/chat/completions",
+					RelayFormat:        types.RelayFormatOpenAI,
+					RelayMode:          mode,
+					IsStream:           tc.stream,
+					ShouldIncludeUsage: true,
+				}
+				common.SetContextKey(c, constant.ContextKeyOriginalModel, req.Model)
+				adaptor := &sub2api.Adaptor{}
+				adaptor.Init(info)
+				converted, err := adaptor.ConvertOpenAIRequest(c, info, req)
+				require.NoError(t, err)
+				body, err := common.Marshal(converted)
+				require.NoError(t, err)
+				resp, err := adaptor.DoRequest(c, info, bytes.NewReader(body))
+				require.NoError(t, err)
+				_, relayErr := adaptor.DoResponse(c, resp.(*http.Response), info)
+				require.Nil(t, relayErr)
+			})
+
+			recorder := httptest.NewRecorder()
+			request := httptest.NewRequest(http.MethodPost, "/test", strings.NewReader(fmt.Sprintf(
+				`{"model":%q,"stream":%t,"messages":[{"role":"user","content":"OK"}],"prompt_cache_options":%s}`, tc.model, tc.stream, cacheOptions,
+			)))
+			request.Header.Set("Content-Type", "application/json")
+			engine.ServeHTTP(recorder, request)
+
+			result := recorder.Result()
+			defer result.Body.Close()
+			require.Equal(t, http.StatusOK, result.StatusCode)
+			if tc.malformed {
+				assert.Empty(t, result.Header.Values(common.KimiCacheWriteTokens5mHeader))
+				assert.Empty(t, result.Header.Values(common.KimiCacheWriteTokens1hHeader))
+			} else {
+				assert.Equal(t, []string{"0"}, result.Header.Values(common.KimiCacheWriteTokens5mHeader))
+				assert.Equal(t, []string{"2048"}, result.Header.Values(common.KimiCacheWriteTokens1hHeader))
+			}
+			for _, header := range []string{"Server", "Via", "X-Request-Id", "X-Client-Request-Id", "Set-Cookie", "Msh-Usage-Account"} {
+				assert.Empty(t, result.Header.Values(header), header)
+			}
+			assert.Equal(t, "local-request", result.Header.Get(common.RequestIdKey))
+			assert.NotContains(t, recorder.Body.String(), "private-provider")
+			assert.Contains(t, recorder.Body.String(), `"ephemeral_1h_input_tokens":2048`)
+			if tc.stream {
+				assert.Contains(t, recorder.Body.String(), "data: [DONE]")
+			}
+		})
+	}
+}
+
+func TestKimiErrorsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
+	withErrorPassthrough(t)
+	const failure = `{"error":{"type":"rate_limit_error","message":"private-provider https://private.invalid","code":"rate_limit_exceeded"}}`
+
+	for _, tc := range []struct {
+		model  string
+		stream bool
+	}{
+		{model: "kimi-k3.1-pro-highspeed"},
+		{model: "kimi-k3.1-pro", stream: true},
+	} {
+		t.Run(tc.model, func(t *testing.T) {
+			engine := privacyRouter(func(c *gin.Context) {
+				common.SetContextKey(c, constant.ContextKeyOriginalModel, tc.model)
+				common.SetContextKey(c, constant.ContextKeyChannelId, 1)
+				if tc.stream {
+					c.Header("Content-Type", "text/event-stream")
+					_, err := c.Writer.WriteString("event: error\ndata: " + failure + "\n\n")
+					require.NoError(t, err)
+					c.Writer.Flush()
+					return
+				}
+				c.Data(http.StatusTooManyRequests, "application/json", []byte(failure))
+			})
+			request := httptest.NewRequest(http.MethodPost, "/test", nil)
+			request.Header.Set(common.RelayErrorPassthroughHeader, "true")
+			request.Header.Set(common.RelayErrorPassthroughNoHeader, "false")
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, request)
+
+			if tc.stream {
+				assert.Equal(t, http.StatusOK, recorder.Code)
+				assert.Contains(t, recorder.Body.String(), "event: error")
+			} else {
+				assert.Equal(t, http.StatusTooManyRequests, recorder.Code)
+			}
+			assert.Contains(t, recorder.Body.String(), "rate_limit_exceeded")
+			assert.Contains(t, recorder.Body.String(), "local-request")
+			assert.NotContains(t, recorder.Body.String(), "private-provider")
+			assert.NotContains(t, recorder.Body.String(), "private.invalid")
+		})
 	}
 }
 
