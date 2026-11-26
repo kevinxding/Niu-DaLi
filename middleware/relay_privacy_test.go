@@ -11,6 +11,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/controller"
 	"github.com/QuantumNous/new-api/middleware"
 	"github.com/QuantumNous/new-api/relay/channel/minimax"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
@@ -408,6 +409,70 @@ func TestKimiErrorsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
 			assert.Contains(t, recorder.Body.String(), "local-request")
 			assert.NotContains(t, recorder.Body.String(), "private-provider")
 			assert.NotContains(t, recorder.Body.String(), "private.invalid")
+		})
+	}
+}
+
+func TestKimiHighspeedSamplingValidation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	const highspeed = "kimi-k3.1-pro-highspeed"
+	for _, tc := range []struct {
+		name       string
+		model      string
+		parameters string
+		valid      bool
+	}{
+		{name: "omitted", model: highspeed, valid: true},
+		{name: "default thinking accepts 1", model: highspeed, parameters: `,"temperature":1,"top_p":0.95`, valid: true},
+		{name: "default thinking rejects 0.7", model: highspeed, parameters: `,"temperature":0.7`},
+		{name: "thinking enabled rejects 0.6", model: highspeed, parameters: `,"thinking":{"type":"enabled"},"temperature":0.6`},
+		{name: "thinking disabled accepts 0.6", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"temperature":0.6,"top_p":0.95`, valid: true},
+		{name: "thinking disabled rejects 1", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"temperature":1`},
+		{name: "effort none selects non-thinking sampling", model: highspeed, parameters: `,"thinking":{"type":"enabled"},"reasoning_effort":"none","temperature":0.6`, valid: true},
+		{name: "temperature zero in a streaming request", model: highspeed, parameters: `,"stream":true,"thinking":{"type":"disabled"},"temperature":0`},
+		{name: "top_p 0.5", model: highspeed, parameters: `,"top_p":0.5`},
+		{name: "thinking disabled rejects top_p 1", model: highspeed, parameters: `,"thinking":{"type":"disabled"},"top_p":1`},
+		{name: "standard model keeps provider validation", model: "kimi-k3.1-pro", parameters: `,"temperature":0.7,"top_p":0.5`, valid: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const path = "/v1/chat/completions"
+			engine := gin.New()
+			engine.POST(path, middleware.RouteTag("relay"), func(c *gin.Context) {
+				defer common.CleanupBodyStorage(c)
+				common.SetContextKey(c, constant.ContextKeyOriginalModel, tc.model)
+				common.SetContextKey(c, constant.ContextKeyChannelId, 1)
+				c.Set(common.RequestIdKey, "gateway-request")
+				if !tc.valid {
+					controller.Relay(c, types.RelayFormatOpenAI)
+					return
+				}
+				parsed, err := helper.GetAndValidateTextRequest(c, relayconstant.RelayModeChatCompletions)
+				require.NoError(t, err)
+				forwarded, err := common.Marshal(parsed)
+				require.NoError(t, err)
+				assert.JSONEq(t, fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]%s}`, tc.model, tc.parameters), string(forwarded))
+				c.Status(http.StatusNoContent)
+			})
+			body := fmt.Sprintf(`{"model":%q,"messages":[{"role":"user","content":"hi"}]%s}`, tc.model, tc.parameters)
+			request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set(common.RelayErrorPassthroughHeader, "true")
+			recorder := httptest.NewRecorder()
+			engine.ServeHTTP(recorder, request)
+
+			if tc.valid {
+				assert.Equal(t, http.StatusNoContent, recorder.Code)
+				return
+			}
+			require.Equal(t, http.StatusBadRequest, recorder.Code)
+			var response struct {
+				Error *types.OpenAIError `json:"error"`
+			}
+			require.NoError(t, common.Unmarshal(recorder.Body.Bytes(), &response))
+			require.NotNil(t, response.Error)
+			assert.Equal(t, "invalid_request_error", response.Error.Type)
+			assert.Equal(t, "invalid_request", response.Error.Code)
+			assert.Equal(t, common.PublicRelayFailureMessage("gateway-request"), response.Error.Message)
 		})
 	}
 }
