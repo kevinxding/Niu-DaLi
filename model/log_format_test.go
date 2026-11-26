@@ -199,6 +199,46 @@ func TestLegacyRejectReasonHandlesNullAdminInfo(t *testing.T) {
 	assert.Equal(t, "legacy-value", adminInfo["reject_reason"])
 }
 
+func TestUserKimiLogsKeepUpstreamDiagnosticsPrivate(t *testing.T) {
+	const private = "private-provider https://private.invalid"
+	const other = `{"cache_write_tokens":2048,"status_code":429,"error_code":"private-code","error_type":"private-type","response_model":{"upstream_model":"private-provider"},"po":["private-parameter"],"stream_status":{"status":"error","end_reason":"error","error_count":1,"end_error":"private-message","errors":["private-message"]}}`
+	upstreamError := Log{
+		ModelName:         "kimi-k3.1-pro-highspeed",
+		Type:              LogTypeError,
+		RequestId:         "local-request",
+		UpstreamRequestId: "private-request",
+		ChannelId:         17,
+		ChannelName:       "private-provider",
+		Content:           private,
+		Other:             other,
+	}
+	consume := upstreamError
+	consume.ModelName = "kimi-k3.1-pro"
+	consume.Type = LogTypeConsume
+	consume.Content = "Cache usage"
+	unrelated := upstreamError
+	unrelated.ModelName = "other-model"
+
+	admin := upstreamError
+	FormatAdminLogs([]*Log{&admin})
+	assert.Equal(t, private, admin.Content)
+	assert.Equal(t, other, admin.Other)
+
+	formatUserLogs([]*Log{&upstreamError, &consume, &unrelated}, 0)
+
+	assert.Equal(t, common.PublicRelayFailureMessage("local-request"), upstreamError.Content)
+	assert.Equal(t, "Cache usage", consume.Content)
+	for _, log := range []*Log{&upstreamError, &consume} {
+		assert.Zero(t, log.ChannelId)
+		assert.Empty(t, log.ChannelName)
+		assert.Empty(t, log.UpstreamRequestId)
+		assert.Equal(t, "local-request", log.RequestId)
+		assert.JSONEq(t, `{"cache_write_tokens":2048,"status_code":429,"stream_status":{"status":"error","end_reason":"error","error_count":1}}`, log.Other)
+	}
+	assert.Equal(t, private, unrelated.Content)
+	assert.Equal(t, "private-request", unrelated.UpstreamRequestId)
+}
+
 func TestLogFormattingPreservesLargeIntegerLexemes(t *testing.T) {
 	const other = `{"public_id":9007199254740993,"admin_info":{"admin_id":9007199254740995},"root_info":{"generation":18446744073709551615}}`
 

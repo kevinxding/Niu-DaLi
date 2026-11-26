@@ -9,9 +9,11 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/QuantumNous/new-api/types"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/sjson"
 
 	"gorm.io/gorm"
 )
@@ -114,9 +116,29 @@ func assignDisplayLogIds(logs []*Log, startIdx int) {
 }
 
 func formatUserLogs(logs []*Log, startIdx int) {
-	for i := range logs {
-		logs[i].ChannelName = ""
-		logs[i].Other = formatLogOtherJSON(logs[i].Other, logOtherVisibilityUser)
+	for _, log := range logs {
+		log.ChannelName = ""
+		log.Other = formatLogOtherJSON(log.Other, logOtherVisibilityUser)
+		if !dto.IsKimiK31Model(log.ModelName) {
+			continue
+		}
+
+		log.ChannelId = 0
+		log.UpstreamRequestId = ""
+		if log.Type == LogTypeError {
+			log.Content = common.PublicRelayFailureMessage(log.RequestId)
+		}
+		if log.Other == "" || log.Other == "{}" {
+			continue
+		}
+		for _, path := range []string{"error_type", "error_code", "response_model", "po", "stream_status.end_error", "stream_status.errors"} {
+			clean, err := sjson.Delete(log.Other, path)
+			if err != nil {
+				log.Other = "{}"
+				break
+			}
+			log.Other = clean
+		}
 	}
 	assignDisplayLogIds(logs, startIdx)
 }

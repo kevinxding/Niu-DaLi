@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/QuantumNous/new-api/common"
+	"github.com/QuantumNous/new-api/constant"
+	"github.com/QuantumNous/new-api/relaykit/dto"
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
 )
@@ -37,7 +39,8 @@ type relayPrivacyWriter struct {
 // produce a half-redacted body.
 func (w *relayPrivacyWriter) errorPassthrough() bool {
 	if !w.passthroughSet {
-		w.passthrough = common.RelayErrorPassthroughFor(w.ctx.GetHeader)
+		model := common.GetContextKeyString(w.ctx, constant.ContextKeyOriginalModel)
+		w.passthrough = !dto.IsKimiK31Model(model) && common.RelayErrorPassthroughFor(w.ctx.GetHeader)
 		w.passthroughSet = true
 	}
 	return w.passthrough
@@ -64,8 +67,8 @@ func (w *relayPrivacyWriter) prepare() {
 	default:
 		w.mode = "binary"
 	}
-	for name := range w.Header() {
-		if common.RelayProtocolHeader(name) || name == "Content-Length" || name == "Connection" || name == "Transfer-Encoding" {
+	for name, values := range w.Header() {
+		if common.RelayProtocolHeader(name, values) || name == "Content-Length" || name == "Connection" || name == "Transfer-Encoding" {
 			continue
 		}
 		if values, ok := w.localHeaders[name]; ok {

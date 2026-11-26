@@ -74,6 +74,7 @@ type GeneralOpenAIRequest struct {
 	Store json.RawMessage `json:"store,omitempty"`
 	// Used by OpenAI to cache responses for similar requests to optimize your cache hit rates. Replaces the user field
 	PromptCacheKey       string          `json:"prompt_cache_key,omitempty"`
+	PromptCacheOptions   json.RawMessage `json:"prompt_cache_options,omitempty"`
 	PromptCacheRetention json.RawMessage `json:"prompt_cache_retention,omitempty"`
 	LogitBias            json.RawMessage `json:"logit_bias,omitempty"`
 	Metadata             json.RawMessage `json:"metadata,omitempty"`
@@ -301,6 +302,11 @@ func IsOpenAIReasoningOModel(modelName string) bool {
 // IsOpenAIGPT5Model identifies the GPT-5 family, independently of request capabilities.
 func IsOpenAIGPT5Model(modelName string) bool {
 	return modelName == "gpt-5" || strings.HasPrefix(modelName, "gpt-5-") || strings.HasPrefix(modelName, "gpt-5.")
+}
+
+// IsKimiK31Model identifies the Kimi K3.1 Pro variants that use cache-write response headers.
+func IsKimiK31Model(modelName string) bool {
+	return strings.EqualFold(modelName, "kimi-k3.1-pro") || strings.EqualFold(modelName, "kimi-k3.1-pro-highspeed")
 }
 
 // OpenAIChatCapabilities describes independent Chat Completions compatibility rules.
